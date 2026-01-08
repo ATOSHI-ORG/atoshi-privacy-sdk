@@ -1,0 +1,55 @@
+{
+  "name": "@atoshi/privacy-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Atoshi privacy transactions",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.3",
+    "ethers": "^6.9.0",
+    "ffjavascript": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.0",
+    "vitest": "^1.1.0",
+    "eslint": "^8.55.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "prettier": "^3.1.0"
+  },
+  "keywords": [
+    "atoshi",
+    "privacy",
+    "zk-snark",
+    "ethereum",
+    "sdk"
+  ],
+  "author": "Atoshi Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/atoshi-chain/atoshi-privacy-sdk"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+
