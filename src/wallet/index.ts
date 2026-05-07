@@ -8,6 +8,26 @@ import { buildPoseidon } from 'circomlibjs';
 import { Keypair, NoteData, NoteRecord, NoteStatus, WalletConfig, FIELD_SIZE } from '../types';
 import { Note } from '../note';
 import { randomFieldElement, poseidonHash } from '../utils';
+import {
+  DerivedKeys,
+  EncryptedBackup,
+  decryptBackup,
+  deriveKeysFromSeed,
+  encryptBackup,
+  seedFromEIP712Signature,
+  seedFromMnemonic,
+  seedFromPassphrase,
+} from './derivation';
+
+export {
+  generateMnemonic,
+  seedFromEIP712Signature,
+  seedFromMnemonic,
+  seedFromPassphrase,
+  encryptBackup,
+  decryptBackup,
+} from './derivation';
+export type { EncryptedBackup, DerivedKeys } from './derivation';
 
 /**
  * Privacy wallet for managing private assets
@@ -19,6 +39,10 @@ export class PrivacyWallet {
   private notes: Map<string, NoteRecord> = new Map();
   private config: WalletConfig;
   private initialized = false;
+  // Held in memory for exportEncrypted / EncryptedNote decoding flows.
+  // Lost on page refresh; the user re-derives via the same EIP-712
+  // signature or mnemonic on next login.
+  private derivedKeys: DerivedKeys | null = null;
 
   constructor(config: WalletConfig = {}) {
     this.config = {
@@ -82,6 +106,115 @@ export class PrivacyWallet {
   async derivePublicKey(privateKey: bigint): Promise<bigint> {
     this.ensureInitialized();
     return poseidonHash([privateKey], this.poseidon, this.F);
+  }
+
+  // ==========================================================
+  // Recoverable key derivation (Phase 1: cross-device recovery)
+  // ==========================================================
+
+  /**
+   * Initialize the wallet from a 65-byte EIP-712 signature obtained by
+   * the user from MetaMask (or another EOA wallet). Two devices using
+   * the same EOA produce the same signature -> same seed -> same
+   * privacy keys, so notes are recoverable without managing extra
+   * secrets.
+   *
+   * Flow:
+   *   1. Browser: signer.signTypedData(domain, types, message) where
+   *      domain/types/message come from
+   *      `SEED_DERIVATION_TYPED_DATA` in derivation.ts.
+   *   2. Pass the resulting hex signature here.
+   *
+   * The wallet's main keypair adopts `derivedKeys.spendingKey` as its
+   * private key (Poseidon nullifier domain). The viewing key and AES
+   * encryption key are stashed for later use by EncryptedNote
+   * decoding and exportEncrypted.
+   */
+  async initFromEIP712Signature(signature: string): Promise<Keypair> {
+    this.ensureInitialized();
+    const seed = await seedFromEIP712Signature(signature);
+    return this.applyDerivedKeys(await deriveKeysFromSeed(seed));
+  }
+
+  /**
+   * Initialize the wallet from a BIP-39 mnemonic (12 or 24 words).
+   * Optional passphrase is the BIP-39 "25th word".
+   */
+  async initFromMnemonic(phrase: string, passphrase = ''): Promise<Keypair> {
+    this.ensureInitialized();
+    const seed = await seedFromMnemonic(phrase, passphrase);
+    return this.applyDerivedKeys(await deriveKeysFromSeed(seed));
+  }
+
+  /**
+   * Initialize the wallet from a user-chosen passphrase + a stored salt.
+   * The salt MUST be at least 16 bytes and stored alongside the
+   * encrypted backup so subsequent logins can re-derive the same key.
+   */
+  async initFromPassphrase(passphrase: string, salt: Uint8Array): Promise<Keypair> {
+    this.ensureInitialized();
+    const seed = await seedFromPassphrase(passphrase, salt);
+    return this.applyDerivedKeys(await deriveKeysFromSeed(seed));
+  }
+
+  /**
+   * Read-only access to the viewing/encryption keys derived in
+   * initFrom*. The spending key is always exposed via getKeypair().
+   * Returns null if the wallet was initialized via generateKeypair()
+   * (random key path), which intentionally has no recoverable seed.
+   */
+  getDerivedKeys(): DerivedKeys | null {
+    return this.derivedKeys;
+  }
+
+  /** Internal: shared completion path for the three initFrom* methods. */
+  private async applyDerivedKeys(keys: DerivedKeys): Promise<Keypair> {
+    this.derivedKeys = keys;
+    // The Note nullifier circuit treats the spending key as a Poseidon
+    // field element. Use it as the wallet's main private key so the
+    // existing keypair-based code paths (createNote, computeNullifier,
+    // etc.) keep working unchanged.
+    return this.importKeypair(keys.spendingKey);
+  }
+
+  // ==========================================================
+  // Encrypted backup / restore
+  // ==========================================================
+
+  /**
+   * Encrypt the wallet's full state (keypair + notes) with the
+   * derived AES-256-GCM key. The output blob is a small JSON object
+   * safe to store in localStorage, IPFS, or as on-chain
+   * EncryptedNote events.
+   *
+   * Requires the wallet was initialized via one of the initFrom*
+   * methods so an encryption key is available.
+   */
+  async exportEncrypted(): Promise<EncryptedBackup> {
+    if (!this.derivedKeys) {
+      throw new Error(
+        'exportEncrypted requires a wallet initialized via initFromEIP712Signature/Mnemonic/Passphrase',
+      );
+    }
+    const json = this.export();
+    return encryptBackup(json, this.derivedKeys.encryptionKey);
+  }
+
+  /**
+   * Decrypt a backup blob produced by `exportEncrypted` and load its
+   * keypair + notes into this wallet instance. The encryption key
+   * must be the same one the backup was sealed with — typically the
+   * caller has already run initFrom* and is now restoring saved
+   * notes.
+   */
+  async importEncrypted(blob: EncryptedBackup): Promise<void> {
+    if (!this.derivedKeys) {
+      throw new Error(
+        'importEncrypted requires the wallet was first initialized via initFrom* so an encryption key is available',
+      );
+    }
+    const json = await decryptBackup(blob, this.derivedKeys.encryptionKey);
+    await this.import(json);
   }
 
   /**
