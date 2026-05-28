@@ -48,7 +48,7 @@ export class PrivacyRpcClient {
       throw new Error(`RPC error: ${response.status} - ${error}`);
     }
 
-    return response.json();
+    return (await response.json()) as T;
   }
 
   /**

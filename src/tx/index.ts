@@ -18,7 +18,6 @@ import {
   SdkConfig,
 } from '../types';
 import { PrivacyWallet } from '../wallet';
-import { Note } from '../note';
 import { PrivacyRpcClient } from '../rpc';
 import { toHex, fromHex } from '../utils';
 
@@ -39,11 +38,14 @@ export class TransactionBuilder {
   private wallet: PrivacyWallet;
   private rpcClient: PrivacyRpcClient;
   private config: SdkConfig;
-  private provider: ethers.Provider | null = null;
+  // _provider / _F 是给后续 Unshield + Transfer 流程预留的字段,目前未启用
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private _provider: ethers.Provider | null = null;
   private signer: ethers.Signer | null = null;
   private shieldContract: ethers.Contract | null = null;
   private poseidon: any;
-  private F: any;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private _F: any;
   private initialized = false;
 
   constructor(wallet: PrivacyWallet, config: SdkConfig) {
@@ -60,14 +62,14 @@ export class TransactionBuilder {
 
     // Initialize Poseidon
     this.poseidon = await buildPoseidon();
-    this.F = this.poseidon.F;
+    this._F = this.poseidon.F;
 
     // Setup provider and signer
     if (signer) {
       this.signer = signer;
-      this.provider = signer.provider ?? null;
+      this._provider = signer.provider ?? null;
     } else {
-      this.provider = new ethers.JsonRpcProvider(this.config.l1RpcUrl);
+      this._provider = new ethers.JsonRpcProvider(this.config.l1RpcUrl);
     }
 
     // Setup Shield contract

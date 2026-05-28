@@ -37,19 +37,16 @@ export class PrivacyWallet {
   private F: any;
   private keypair: Keypair | null = null;
   private notes: Map<string, NoteRecord> = new Map();
-  private config: WalletConfig;
   private initialized = false;
   // Held in memory for exportEncrypted / EncryptedNote decoding flows.
   // Lost on page refresh; the user re-derives via the same EIP-712
   // signature or mnemonic on next login.
   private derivedKeys: DerivedKeys | null = null;
 
-  constructor(config: WalletConfig = {}) {
-    this.config = {
-      storagePrefix: 'atoshi_privacy_',
-      autoSync: true,
-      ...config,
-    };
+  constructor(_config: WalletConfig = {}) {
+    // config 当前没被消费,接收参数仅为 API 兼容性
+    // 字段被消费时再恢复 this.config = { storagePrefix: 'atoshi_privacy_', autoSync: true, ..._config };
+    void _config;
   }
 
   /**
