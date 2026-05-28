@@ -26,6 +26,21 @@ export type { NotePlaintext } from './crypto/ecies';
 export { ChainScanner } from './scanner';
 export type { ScannerConfig, RecoveredNote } from './scanner';
 
+// Poseidon helpers (commitment / nullifier / owner pubkey / blinding).
+export {
+  poseidonHash,
+  computeCommitment,
+  computeNullifier,
+  deriveOwnerPubkey,
+  randomBlinding,
+  buildZeros,
+  BN254_FIELD_SIZE,
+} from './poseidon';
+
+// Off-chain Merkle tree reconstruction (Unshield / Transfer 生成 proof 必须).
+export { rebuildMerkleTree } from './merkle';
+export type { MerklePath, MerkleTreeData } from './merkle';
+
 // Types
 export * from './types';
 
