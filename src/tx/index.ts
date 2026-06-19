@@ -21,11 +21,19 @@ import { PrivacyWallet } from '../wallet';
 import { PrivacyRpcClient } from '../rpc';
 import { toHex, fromHex } from '../utils';
 
-// Shield contract ABI (minimal)
+// Shield contract ABI (minimal).
+// Signatures updated for audit 2026-06:
+//   - deposit() now takes a Groth16 proof tuple (pA, pB, pC) plus
+//     encryptedNote, binding amount + tokenId into the proof (Issue 2).
+//   - withdraw() public-input shape is unchanged at the function level,
+//     but the underlying Verifier circuit grew from 6 to 7 public signals
+//     (added relayer) — see audit Issue 4 and the unshield prover
+//     input changes in generateWithdrawProof().
+//   - transfer() unchanged at the function level.
 const SHIELD_ABI = [
-  'function deposit(uint256 commitment, address token, uint256 amount) payable',
+  'function deposit(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 commitment, address token, uint256 amount, bytes encryptedNote) payable',
   'function withdraw(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 root, uint256 nullifierHash, address recipient, address relayer, uint256 fee, address token, uint256 amount)',
-  'function transfer(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 root, uint256 nullifierHash, uint256 newCommitment)',
+  'function transfer(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 root, uint256 nullifierHash, uint256 newCommitment, bytes encryptedNote)',
   'function isKnownRoot(uint256 root) view returns (bool)',
   'function isSpent(uint256 nullifierHash) view returns (bool)',
   'function getLastRoot() view returns (uint256)',
@@ -111,27 +119,47 @@ export class TransactionBuilder {
     // Create note
     const amount = BigInt(params.amount.toString());
     const tokenId = params.tokenAddress === ethers.ZeroAddress ? 0n : fromHex(params.tokenAddress);
-    
+
     const note = await this.wallet.createNote(amount, tokenId, publicKey);
     const commitment = note.getCommitment()!;
 
+    // Generate the deposit ZK proof binding (commitment, amount, tokenId)
+    // together. After audit Issue 2 the Shield contract requires this —
+    // without it deposit() reverts with "Shield: invalid deposit proof".
+    const shieldProof = await this.generateProof('shield', {
+      commitment: commitment.toString(),
+      amount: amount.toString(),
+      tokenId: tokenId.toString(),
+      owner: publicKey.toString(),
+      blinding: note.blinding.toString(),
+    });
+    const encryptedNote = '0x'; // SDK consumers can plumb a real encryptedNote later
+
     // Submit to L1
     let tx: ethers.TransactionResponse;
-    
+
     if (params.tokenAddress === ethers.ZeroAddress) {
       // Native token deposit
       tx = await this.shieldContract.deposit(
+        shieldProof.pA,
+        shieldProof.pB,
+        shieldProof.pC,
         commitment,
         ethers.ZeroAddress,
         amount,
+        encryptedNote,
         { value: amount }
       );
     } else {
       // ERC20 deposit (requires approval first)
       tx = await this.shieldContract.deposit(
+        shieldProof.pA,
+        shieldProof.pB,
+        shieldProof.pC,
         commitment,
         params.tokenAddress,
-        amount
+        amount,
+        encryptedNote
       );
     }
 
@@ -196,12 +224,22 @@ export class TransactionBuilder {
       throw new Error('Note already spent');
     }
 
-    // Generate ZK proof
+    // Generate ZK proof. The unshield circuit now binds `relayer` into
+    // the public-input vector (audit Issue 3 / contract Issue 4), so
+    // callers must specify which relayer will broadcast the tx. When
+    // unset, default to address(0) and force fee=0 (the contract
+    // requires _relayer != 0 whenever _fee > 0).
+    const relayer = params.relayer ?? '0x0000000000000000000000000000000000000000';
+    const fee = params.fee ? BigInt(params.fee.toString()) : 0n;
+    if (fee > 0n && relayer === '0x0000000000000000000000000000000000000000') {
+      throw new Error('A non-zero relayer address is required when fee > 0');
+    }
     const proof = await this.generateWithdrawProof(
       note,
       merkleProof,
       params.recipient,
-      params.fee ? BigInt(params.fee.toString()) : 0n
+      relayer,
+      fee
     );
 
     // Submit to privacy node
@@ -289,12 +327,20 @@ export class TransactionBuilder {
   }
 
   /**
-   * Generate withdraw proof
+   * Generate withdraw proof.
+   *
+   * @param relayer EVM address of the relayer that will submit this
+   *                withdraw on-chain. Bound into the proof via audit
+   *                Issue 3 (circuit) / Issue 4 (contract) so an MEV
+   *                attacker cannot swap _relayer in calldata and steal
+   *                the fee. Pass address(0) when self-broadcasting (fee
+   *                must be 0 in that case; the contract enforces it).
    */
   private async generateWithdrawProof(
     note: any,
     merkleProof: MerkleProof,
     recipient: string,
+    relayer: string,
     fee: bigint
   ): Promise<ZkProof> {
     const keypair = this.wallet.getKeypair();
@@ -303,10 +349,12 @@ export class TransactionBuilder {
     }
 
     const input = {
-      // Public inputs
+      // Public inputs (7 total — order must match unshield.circom's
+      // `component main {public [...]}` declaration).
       root: merkleProof.root.toString(),
       nullifierHash: (await this.wallet.computeNullifier(note)).toString(),
       recipient: BigInt(recipient).toString(),
+      relayer: BigInt(relayer).toString(),
       tokenId: note.tokenId.toString(),
       amount: note.amount.toString(),
       fee: fee.toString(),

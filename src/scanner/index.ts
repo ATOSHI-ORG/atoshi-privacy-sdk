@@ -19,6 +19,7 @@
 
 import { ethers } from 'ethers';
 import { decryptNote, viewingPubKey, NotePlaintext } from '../crypto/ecies';
+import { computeCommitment, deriveOwnerPubkey } from '../poseidon';
 
 /** Shield 合约的最小 ABI (只是扫描需要的事件) */
 const SHIELD_EVENTS_ABI = [
@@ -97,9 +98,25 @@ export class ChainScanner {
     const end = toBlock ?? (await this.getLatestBlock());
     const recovered: RecoveredNote[] = [];
 
-    // 用 spendingKey 算出 ownerPubkey, 后面用来验证解密的 Note 真的属于本人
-    // (encryptedNote 任何人都能 emit, 必须验证 commitment == Poseidon(amount, tokenId, owner, blinding))
-    // —— 这步在调用方做(他们有 Poseidon hasher),scanner 只负责拉 + 解密.
+    // Audit Q4 (contract audit 2026-06): the contract cannot validate
+    // encryptedNote payload (it's encrypted; if the contract could read
+    // it, every observer could, breaking confidentiality). So the
+    // validation has to live here, client-side, where the spending key
+    // is available.
+    //
+    // Threat model without this check: an attacker emits a Transfer/
+    // Deposit event with an encryptedNote crafted for the victim's
+    // viewingPubKey but claiming a much larger (amount, tokenId) than
+    // the underlying on-chain commitment actually encodes. The victim's
+    // wallet decrypts successfully, displays inflated balance, and the
+    // victim may rely on it (OTC, collateralized lending, …) before
+    // discovering at spend time that no proof will verify.
+    //
+    // Fix: derive the owner pubkey from the spendingKey and re-hash the
+    // decrypted (amount, tokenId, ownerPubkey, blinding) into a fresh
+    // commitment locally. If it doesn't match the on-chain commitment,
+    // the encryptedNote was forged — drop it silently.
+    const ownerPubkey = await deriveOwnerPubkey(spendingKey);
 
     for (let from = this.fromBlock; from <= end; from += this.chunkSize) {
       const to = Math.min(from + this.chunkSize - 1, end);
@@ -150,15 +167,26 @@ export class ChainScanner {
         const plaintext = await decryptNote(blob, viewingKey);
         if (!plaintext) continue;
 
+        // Audit Q4: re-derive commitment from the decrypted plaintext
+        // and reject anything that doesn't match the on-chain value.
+        // This is the only place "attacker-forged encryptedNote → fake
+        // balance" can be blocked — the chain can't see through the
+        // ciphertext.
+        const amount = BigInt(plaintext.amount);
+        const tokenId = BigInt(plaintext.tokenId);
+        const blinding = BigInt(plaintext.blinding);
+        const recomputed = await computeCommitment(amount, tokenId, ownerPubkey, blinding);
+        if (recomputed !== commitment) continue;
+
         recovered.push({
           commitment,
           leafIndex,
           blockNumber: log.blockNumber,
           txHash: log.transactionHash,
           source,
-          amount: BigInt(plaintext.amount),
-          tokenId: BigInt(plaintext.tokenId),
-          blinding: BigInt(plaintext.blinding),
+          amount,
+          tokenId,
+          blinding,
         });
       }
     }
