@@ -241,9 +241,19 @@ async function privateTransfer(recipientPubKey: bigint, amountAtos: string) {
 
 Internally:
 1. Computes the nullifier for the old note (proves you own it without revealing which one)
-2. Builds two new note commitments: one for recipient, one for change-back to self
-3. Generates a Groth16 ZK proof: "I know an unspent note that hashes to commitment C; here are the nullifier and two new commitments"
-4. Submits to `Shield.transfer(proof, nullifier, newC1, newC2)`
+2. Builds **one** new note commitment for the recipient. The circuit enforces
+   `inAmount === outAmount` — the entire input note is transferred in one
+   shot; **V1 does not support change-back to self**.
+3. Generates a Groth16 ZK proof: "I know an unspent note that hashes to
+   commitment C; here is its nullifier and the new commitment for the
+   recipient"
+4. Submits to `Shield.transfer(proof, nullifier, newCommitment, encryptedNote)`
+
+> **V1 limitation — no change notes.** If your input note is 10 ATOSHI and
+> you only want to send 3, you must either (a) deposit a fresh 3-ATOSHI
+> note first, or (b) transfer the full 10 then have the recipient send 7
+> back (over a fresh private transfer). Native change-back is on the V2
+> roadmap.
 
 ZK proof generation takes **3-8 seconds** on a typical laptop. Show a progress UI.
 

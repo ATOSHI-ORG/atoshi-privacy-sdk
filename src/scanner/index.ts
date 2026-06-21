@@ -5,7 +5,7 @@
  * 用法:
  *   const scanner = new ChainScanner({
  *     rpcUrl: 'http://52.76.210.218:8123',
- *     shieldAddress: '0x2942ACf6...',
+ *     shieldAddress: '0x4A951a4B...',  // current Atoshi L2 Shield (redeployed 2026-06-03 with evmVersion=paris)
  *     fromBlock: 0,                           // 或上次扫到的位置
  *   });
  *   const notes = await scanner.scanForViewer(viewingKey, spendingKey);
