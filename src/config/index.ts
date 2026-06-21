@@ -27,19 +27,38 @@ export interface SdkConfig {
 }
 
 /**
- * Default configuration for development
+ * Default configuration for Atoshi testnet (2026-06 redeploy).
+ *
+ * L1 contracts (forkID=11, salt=0x...05, deployer A 0x73aF73D9...):
+ *   - Bridge proxy:        0x8024430B...
+ *   - GER:                 0xD19110E2...
+ *   - RollupManager:       0xEF58A09e...
+ *   - rollupAddress:       0xECe5D7e2...
+ *
+ * L2 privacy contracts (audit/2026-06-fixes, commit 9c6adaa):
+ *   - Shield:              0xB515a4a4... (Merkle 32 + relayer-binding)
+ *   - ShieldVerifier:      0x8409B3Fd...
+ *   - TransferVerifier:    0x14B3743E...
+ *   - UnshieldVerifier:    0xa7944803... (含 relayer binding)
+ *   - Poseidon(2):         0xC1d3Bb5B...
  */
 export const DEFAULT_CONFIG: Partial<SdkConfig> = {
-  // L1 (atoshi-chain)
-  l1RpcUrl: 'http://localhost:8545',
-  l1ChainId: 12345,
+  // L1 (atoshi-chain testnet)
+  l1RpcUrl: 'https://rpc-testnet.atoshi.org',
+  l1ChainId: 88288,
+  l1BridgeContract: '0x8024430BC06A3BfFFDF65bE4a5f86833E61A1C63',
 
-  // L2 (Polygon zkEVM)
+  // L2 (Atoshi privacy testnet)
   l2RpcUrl: 'http://localhost:8123',
   l2ChainId: 67890,
-  
-  // L2 Bridge is at a fixed address on Polygon zkEVM
+  // L2 Bridge proxy (在 L2 genesis 里固定地址, 跟 L1 Bridge 不同址)
   l2BridgeContract: '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe',
+
+  // Privacy contracts (audit/2026-06-fixes deployment)
+  shieldContract: '0xB515a4a438c168cf34F1ABEEa40a835a39af5625',
+  // verifierContract 字段历史遗留, SDK 不直接调; 填主 verifier 占位
+  // (实际 3 个 verifier 都在 Shield 合约内部引用, 见 deployments/atoshi_l2.json)
+  verifierContract: '0x8409B3Fd5b7F48678AA8D0Ffc97aDFa18612dA6A',
 
   // Circuits
   circuitsPath: './circuits/build',
