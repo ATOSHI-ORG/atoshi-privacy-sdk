@@ -26,6 +26,11 @@ export interface SdkConfig {
   l2RpcUrl: string;
   l2ChainId: number;
   l2BridgeContract: string;  // Polygon Bridge on L2 (genesis-fixed)
+  /** Polygon CDK rollup networkID, used as `destinationNetwork` in L1→L2
+   *  bridgeAsset / bridgeMessage calls. L1 mainnet origin = 0, each rollup
+   *  gets a sequential ID assigned at createRollup time.  Wrong value here
+   *  → tx succeeds on L1 but funds are unclaimable (different network). */
+  bridgeNetworkId: number;
 
   // ============ Privacy contracts (deployed on L2) ============
   shieldContract: string;    // Shield.sol on L2
@@ -69,6 +74,7 @@ export const TESTNET_CONFIG: SdkConfig = {
   l2RpcUrl: 'https://l2-rpc1-testnet.atoshi.org',
   l2ChainId: 67890,
   l2BridgeContract: '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe',
+  bridgeNetworkId: 1,
 
   shieldContract: '0xB515a4a438c168cf34F1ABEEa40a835a39af5625',
   verifierContract: '0x8409B3Fd5b7F48678AA8D0Ffc97aDFa18612dA6A',
@@ -95,6 +101,7 @@ export const MAINNET_CONFIG: SdkConfig = {
   l2RpcUrl: 'https://l2-public.rpc.atoshi.org',
   l2ChainId: 67897,
   l2BridgeContract: '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe',
+  bridgeNetworkId: 2,
 
   shieldContract: '0xf9639ac8869B514B50A5F5174B26EA94Fa558c99',
   verifierContract: '0xa6163377B79eCA32f76eA3F5d083637D5e90557D',
@@ -153,6 +160,7 @@ export function validateConfig(config: SdkConfig): void {
     'l2RpcUrl',
     'l2ChainId',
     'l2BridgeContract',
+    'bridgeNetworkId',
     'shieldContract',
     'verifierContract',
   ];
