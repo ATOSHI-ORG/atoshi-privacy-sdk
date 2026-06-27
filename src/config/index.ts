@@ -1,135 +1,184 @@
 /**
- * Updated SDK Configuration for Polygon L2
+ * Atoshi Privacy SDK — multi-network configuration.
+ *
+ * One SDK version supports both testnet and mainnet. The caller picks
+ * the network via:
+ *   import { AtoshiClient, MAINNET_CONFIG } from '@atoshi/privacy-sdk';
+ *   const client = new AtoshiClient(MAINNET_CONFIG);
+ *
+ * Or by chainId lookup:
+ *   const cfg = NETWORKS[await wallet.getChainId()];
+ *   const client = new AtoshiClient(cfg);
+ *
+ * Or build a fully custom config (for local dev / private deployments).
  */
 
 export interface SdkConfig {
-  // ============ L1 Configuration (atoshi-chain) ============
+  /** Human-readable network name, e.g. "atoshi-mainnet" */
+  name: string;
+
+  // ============ L1 (atoshi-chain) ============
   l1RpcUrl: string;
   l1ChainId: number;
   l1BridgeContract: string;  // Polygon Bridge on L1
 
-  // ============ L2 Configuration (Polygon zkEVM) ============
+  // ============ L2 (atoshi privacy L2) ============
   l2RpcUrl: string;
   l2ChainId: number;
-  l2BridgeContract: string;  // Polygon Bridge on L2 (fixed address)
+  l2BridgeContract: string;  // Polygon Bridge on L2 (genesis-fixed)
 
-  // ============ Privacy Contracts (deployed on L2) ============
+  // ============ Privacy contracts (deployed on L2) ============
   shieldContract: string;    // Shield.sol on L2
-  verifierContract: string;  // Verifier.sol on L2
+  /** Kept for backwards-compat with older SDK consumers.  Filled with
+   *  ShieldVerifier; the SDK itself does not call verifiers directly. */
+  verifierContract: string;
+
+  // ============ Services (Phase 3 — Bridge + Relayer) ============
+  /** zkevm-bridge-service REST API (merkle proofs, deposit list). */
+  bridgeServiceUrl?: string;
+  /** Atoshi Privacy Relayer (sponsored transfer / unshield). */
+  relayerUrl?: string;
+  /** Relayer L2 EOA — bound into unshield ZK proof's `_relayer` field
+   *  so a third party can't intercept and claim the fee. */
+  relayerAddress?: string;
 
   // ============ Circuit Configuration ============
   circuitsPath?: string;     // Path to circuit WASM files
   keysPath?: string;         // Path to proving keys
 
   // ============ Optional ============
-  proverUrl?: string;        // Optional remote prover service
-  indexerUrl?: string;       // Optional indexer service for faster queries
+  proverUrl?: string;
+  indexerUrl?: string;
 }
 
+// ============================================================================
+// Built-in network configurations
+// ============================================================================
+
 /**
- * Default configuration for Atoshi testnet (2026-06 redeploy).
- *
- * L1 contracts (forkID=11, salt=0x...05, deployer A 0x73aF73D9...):
- *   - Bridge proxy:        0x8024430B...
- *   - GER:                 0xD19110E2...
- *   - RollupManager:       0xEF58A09e...
- *   - rollupAddress:       0xECe5D7e2...
- *
- * L2 privacy contracts (audit/2026-06-fixes, commit 9c6adaa):
- *   - Shield:              0xB515a4a4... (Merkle 32 + relayer-binding)
- *   - ShieldVerifier:      0x8409B3Fd...
- *   - TransferVerifier:    0x14B3743E...
- *   - UnshieldVerifier:    0xa7944803... (含 relayer binding)
- *   - Poseidon(2):         0xC1d3Bb5B...
+ * Atoshi testnet (chainID L1=88288, L2=67890).
+ * Contracts deployed 2026-06-21 from audit/2026-06-fixes commit 9c6adaa.
  */
-export const DEFAULT_CONFIG: Partial<SdkConfig> = {
-  // L1 (atoshi-chain testnet)
+export const TESTNET_CONFIG: SdkConfig = {
+  name: 'atoshi-testnet',
+
   l1RpcUrl: 'https://rpc-testnet.atoshi.org',
   l1ChainId: 88288,
   l1BridgeContract: '0x8024430BC06A3BfFFDF65bE4a5f86833E61A1C63',
 
-  // L2 (Atoshi privacy testnet)
-  l2RpcUrl: 'http://localhost:8123',
+  l2RpcUrl: 'https://l2-rpc1-testnet.atoshi.org',
   l2ChainId: 67890,
-  // L2 Bridge proxy (在 L2 genesis 里固定地址, 跟 L1 Bridge 不同址)
   l2BridgeContract: '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe',
 
-  // Privacy contracts (audit/2026-06-fixes deployment)
   shieldContract: '0xB515a4a438c168cf34F1ABEEa40a835a39af5625',
-  // verifierContract 字段历史遗留, SDK 不直接调; 填主 verifier 占位
-  // (实际 3 个 verifier 都在 Shield 合约内部引用, 见 deployments/atoshi_l2.json)
   verifierContract: '0x8409B3Fd5b7F48678AA8D0Ffc97aDFa18612dA6A',
 
-  // Circuits
+  bridgeServiceUrl: 'https://l2-rpc1-testnet.atoshi.org/bridger',
+  relayerUrl: 'https://l2-rpc1-testnet.atoshi.org/relayer',
+  relayerAddress: '0x06A5381541211Ed5676C8Fd08E0cAaDb8b2829f7',
+
   circuitsPath: './circuits/build',
   keysPath: './circuits/keys',
 };
 
 /**
- * Validate SDK configuration
+ * Atoshi mainnet (chainID L1=88188, L2=67897).
+ * Contracts deployed 2026-06-27 from audit/2026-06-fixes commit 4dfc671.
+ */
+export const MAINNET_CONFIG: SdkConfig = {
+  name: 'atoshi-mainnet',
+
+  l1RpcUrl: 'https://rpc.atoshi.org',
+  l1ChainId: 88188,
+  l1BridgeContract: '0x08cE2E12DdA5f5AD1f458a11eF1Bcb7A96498E05',
+
+  l2RpcUrl: 'https://l2-public.rpc.atoshi.org',
+  l2ChainId: 67897,
+  l2BridgeContract: '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe',
+
+  shieldContract: '0xf9639ac8869B514B50A5F5174B26EA94Fa558c99',
+  verifierContract: '0xa6163377B79eCA32f76eA3F5d083637D5e90557D',
+
+  bridgeServiceUrl: 'https://bridge.atoshi.org',
+  relayerUrl: 'https://bridge.atoshi.org/relayer',
+  relayerAddress: '0xF5F573c7A42BeA8C2bC7888AE011aB45fDD65326',
+
+  circuitsPath: './circuits/build',
+  keysPath: './circuits/keys',
+};
+
+/**
+ * Lookup table keyed by L2 chainID so callers can do:
+ *   const cfg = NETWORKS[await wallet.getChainId()];
+ *   if (!cfg) throw new Error('Unsupported network: ' + chainId);
+ */
+export const NETWORKS: Record<number, SdkConfig> = {
+  [TESTNET_CONFIG.l2ChainId]: TESTNET_CONFIG,
+  [MAINNET_CONFIG.l2ChainId]: MAINNET_CONFIG,
+};
+
+/** Pick a built-in config by L2 chainID. */
+export function getConfigByChainId(l2ChainId: number): SdkConfig {
+  const cfg = NETWORKS[l2ChainId];
+  if (!cfg) {
+    throw new Error(
+      `Unsupported L2 chainID ${l2ChainId}. ` +
+      `Known networks: ${Object.keys(NETWORKS).join(', ')}. ` +
+      `Pass a custom SdkConfig to AtoshiClient if you need a non-standard network.`
+    );
+  }
+  return cfg;
+}
+
+/**
+ * Default config kept for backwards compatibility with SDK 0.4.0 callers
+ * that did `new AtoshiClient()` without args. Points to mainnet — new
+ * code should pass a config explicitly via NETWORKS[chainId] or by name.
+ */
+export const DEFAULT_CONFIG: SdkConfig = MAINNET_CONFIG;
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+/**
+ * Throws if config is missing required fields or has malformed addresses.
+ * Called by AtoshiClient at construction.
  */
 export function validateConfig(config: SdkConfig): void {
-  const required = [
+  const required: (keyof SdkConfig)[] = [
     'l1RpcUrl',
     'l1ChainId',
     'l1BridgeContract',
     'l2RpcUrl',
     'l2ChainId',
-    'shieldContract',
-    'verifierContract',
-  ];
-
-  for (const field of required) {
-    if (!(field in config)) {
-      throw new Error(`Missing required config field: ${field}`);
-    }
-  }
-
-  // Validate addresses
-  const addresses = [
-    'l1BridgeContract',
     'l2BridgeContract',
     'shieldContract',
     'verifierContract',
   ];
 
-  for (const field of addresses) {
-    const addr = (config as any)[field];
-    if (typeof addr === 'string' && !addr.match(/^0x[a-fA-F0-9]{40}$/)) {
+  for (const field of required) {
+    if (config[field] === undefined || config[field] === null || config[field] === '') {
+      throw new Error(`Missing required config field: ${field}`);
+    }
+  }
+
+  const addressFields: (keyof SdkConfig)[] = [
+    'l1BridgeContract',
+    'l2BridgeContract',
+    'shieldContract',
+    'verifierContract',
+  ];
+  if (config.relayerAddress) addressFields.push('relayerAddress');
+
+  for (const field of addressFields) {
+    const addr = config[field] as string;
+    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) {
       throw new Error(`Invalid address for ${field}: ${addr}`);
     }
   }
 
-  // Validate chain IDs
   if (config.l1ChainId === config.l2ChainId) {
     throw new Error('L1 and L2 chain IDs must be different');
   }
 }
-
-/**
- * Example configuration for production
- */
-export const PRODUCTION_CONFIG_EXAMPLE: SdkConfig = {
-  // L1 (atoshi-chain mainnet)
-  l1RpcUrl: 'https://rpc.atoshi.network',
-  l1ChainId: 12345,
-  l1BridgeContract: '0x...', // Deployed L1 bridge address
-
-  // L2 (Polygon zkEVM)
-  l2RpcUrl: 'https://l2-rpc.atoshi.network',
-  l2ChainId: 67890,
-  l2BridgeContract: '0x2a3DD3EB832aF982ec71669E178424b10Dca2EDe',
-
-  // Privacy contracts on L2
-  shieldContract: '0x...', // Deployed Shield.sol address
-  verifierContract: '0x...', // Deployed Verifier.sol address
-
-  // Circuits
-  circuitsPath: './circuits/build',
-  keysPath: './circuits/keys',
-
-  // Optional services
-  proverUrl: 'https://prover.atoshi.network',
-  indexerUrl: 'https://indexer.atoshi.network',
-};
-

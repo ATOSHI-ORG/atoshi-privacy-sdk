@@ -47,6 +47,19 @@ export * from './types';
 // Utilities
 export * from './utils';
 
+// Network configuration (multi-network: testnet + mainnet).
+// Consumers pick a network with:
+//   import { MAINNET_CONFIG, getConfigByChainId } from '@atoshi/privacy-sdk';
+export {
+  TESTNET_CONFIG,
+  MAINNET_CONFIG,
+  NETWORKS,
+  getConfigByChainId,
+  DEFAULT_CONFIG,
+  validateConfig,
+} from './config';
+export type { SdkConfig } from './config';
+
 // Version
-export const VERSION = '0.1.0';
+export const VERSION = '0.4.1';
 
