@@ -264,6 +264,17 @@ export class PrivacyWallet {
     }
 
     const key = commitment.toString();
+    // A commitment is the note's canonical on-chain identifier: identical
+    // {amount,tokenId,owner,blinding} hash to the same commitment and share a
+    // nullifier, so they are one spendable note. The Shield contract now also
+    // rejects duplicate commitments on-chain (audit Q2). Therefore never
+    // overwrite an already-tracked record (which may already hold a
+    // Committed/Spent status and a leafIndex) with a fresh Pending one — the
+    // old destructive set() silently dropped note state (audit Issue 10).
+    // Re-adding an existing note is a no-op.
+    if (this.notes.has(key)) {
+      return;
+    }
     this.notes.set(key, {
       note: note.toData(),
       status: NoteStatus.Pending,

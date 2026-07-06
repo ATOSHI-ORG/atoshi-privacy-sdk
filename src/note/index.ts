@@ -164,6 +164,13 @@ export class NoteManager {
     if (!commitment) {
       throw new Error('Note commitment not computed');
     }
+    // Do not overwrite an already-tracked note: a commitment uniquely
+    // identifies a note (and the Shield contract rejects duplicates on-chain,
+    // audit Q2), so a second add of the same commitment is the same note and
+    // must not silently clobber the existing instance (audit Issue 10).
+    if (this.notes.has(commitment.toString())) {
+      return;
+    }
     this.notes.set(commitment.toString(), note);
   }
 
