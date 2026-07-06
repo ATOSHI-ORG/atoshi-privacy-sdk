@@ -101,14 +101,18 @@ export class Note {
   }
 
   /**
-   * Get note data
+   * Get note data (plaintext: amount, tokenId, owner, blinding).
+   *
+   * @internal Exposes note plaintext; used across SDK modules, not public API.
    */
   toData(): NoteData {
     return { ...this.data };
   }
 
   /**
-   * Serialize note
+   * Serialize note (plaintext).
+   *
+   * @internal Exposes note plaintext; not part of the public SDK API.
    */
   serialize(): SerializedNote {
     return {

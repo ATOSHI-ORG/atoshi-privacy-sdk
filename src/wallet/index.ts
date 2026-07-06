@@ -192,6 +192,9 @@ export class PrivacyWallet {
    * initFrom*. The spending key is always exposed via getKeypair().
    * Returns null if the wallet was initialized via generateKeypair()
    * (random key path), which intentionally has no recoverable seed.
+   *
+   * @internal Exposes secret viewing/encryption key material; not public API.
+   * Consumers needing to receive notes should share getViewingPubKey().
    */
   getDerivedKeys(): DerivedKeys | null {
     // Return a copy (incl. a fresh Uint8Array) so callers cannot mutate the
@@ -255,7 +258,10 @@ export class PrivacyWallet {
   }
 
   /**
-   * Get current keypair
+   * Get current keypair (includes the private key).
+   *
+   * @internal Exposes secret key material; used across SDK modules, not part
+   * of the public API. Consumers should use getPublicKey()/getViewingPubKey().
    */
   getKeypair(): Keypair | null {
     // Return a copy so callers cannot mutate the wallet's keypair (audit Issue 16).
@@ -307,6 +313,8 @@ export class PrivacyWallet {
 
   /**
    * Add a note to the wallet
+   *
+   * @internal Wallet-state mutation used by TransactionBuilder; not public API.
    */
   addNote(note: Note): void {
     const commitment = note.getCommitment();
@@ -335,6 +343,8 @@ export class PrivacyWallet {
 
   /**
    * Mark note as committed (in Merkle tree)
+   *
+   * @internal Wallet-state mutation used by TransactionBuilder; not public API.
    */
   markNoteCommitted(commitment: bigint, leafIndex: number, txHash: string): void {
     const key = commitment.toString();
@@ -349,6 +359,8 @@ export class PrivacyWallet {
 
   /**
    * Mark note as spent
+   *
+   * @internal Wallet-state mutation used by TransactionBuilder; not public API.
    */
   markNoteSpent(commitment: bigint, txHash?: string): void {
     const key = commitment.toString();
@@ -364,7 +376,10 @@ export class PrivacyWallet {
   }
 
   /**
-   * Get all notes
+   * Get all notes (returns copies; includes note plaintext).
+   *
+   * @internal Exposes full note plaintext; used across SDK modules. Consumers
+   * should use getBalance()/getUnspentNotes() for display.
    */
   getAllNotes(): NoteRecord[] {
     // Return copies so callers cannot mutate the wallet's internal note
@@ -395,6 +410,8 @@ export class PrivacyWallet {
 
   /**
    * Get note by index
+   *
+   * @internal Exposes note plaintext; used by TransactionBuilder. Not public API.
    */
   getNoteByIndex(leafIndex: number): NoteRecord | undefined {
     return this.getAllNotes().find(
@@ -413,6 +430,8 @@ export class PrivacyWallet {
 
   /**
    * Compute nullifier for a note
+   *
+   * @internal Uses the spending key; called by TransactionBuilder. Not public API.
    */
   async computeNullifier(note: NoteData): Promise<bigint> {
     this.ensureInitialized();
@@ -440,6 +459,9 @@ export class PrivacyWallet {
 
   /**
    * Export wallet data for backup
+   *
+   * @internal Emits the private key + note plaintext as cleartext JSON; used
+   * only by exportEncrypted(). Consumers must use exportEncrypted() instead.
    */
   export(): string {
     if (!this.keypair) {
@@ -473,6 +495,9 @@ export class PrivacyWallet {
 
   /**
    * Import wallet data from backup
+   *
+   * @internal Consumes cleartext backup JSON; used only by importEncrypted().
+   * Consumers must use importEncrypted() instead.
    */
   async import(data: string): Promise<void> {
     this.ensureInitialized();
