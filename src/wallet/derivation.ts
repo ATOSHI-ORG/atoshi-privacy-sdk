@@ -5,13 +5,19 @@
 //    Ethereum wallet (MetaMask) or a 12-word mnemonic. How do they get
 //    back their notes?"
 //
-// We support two equivalent paths to a master seed:
+// We support two paths to a master seed. They produce an EQUIVALENT seed for
+// key derivation, but they are NOT equivalent in their security assumptions or
+// user-interaction risk (audit Q2): the signature path is subject to phishing
+// (a malicious site that gets the user to sign the same typed data reproduces
+// the seed and can decrypt their notes), while the mnemonic path depends on the
+// user safeguarding the phrase. Pick per threat model.
 //
 //   1. EIP-712 signature path (recommended for normal users)
 //      User signs a deterministic typed-data message with their EOA
 //      key. The signature is hashed to a 32-byte master_seed. As long
 //      as the user has the same MetaMask account, signing again
 //      reproduces the same seed — no extra phrase to remember.
+//      Phishing risk: only sign this on the official Atoshi DApp.
 //
 //   2. Mnemonic path (power users / cross-wallet portability)
 //      Standard BIP-39 12/24-word phrase -> seed via PBKDF2.
