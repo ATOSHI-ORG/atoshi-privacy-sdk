@@ -504,12 +504,21 @@ export class TransactionBuilder {
     note: Note,
     recipientViewingPubKey?: Uint8Array
   ): Promise<string> {
-    const pubKey =
-      recipientViewingPubKey ?? this.wallet.getViewingPubKey() ?? undefined;
+    let pubKey = recipientViewingPubKey;
+    if (!pubKey) {
+      // Only default to OUR OWN viewing key when we are the note owner
+      // (self-note). Encrypting a note destined for someone else to our own
+      // key would make it unrecoverable for the real recipient (audit Issue 6).
+      const ownPub = this.wallet.getPublicKey();
+      if (ownPub !== null && note.owner === ownPub) {
+        pubKey = this.wallet.getViewingPubKey() ?? undefined;
+      }
+    }
     if (!pubKey) {
       console.warn(
         '[atoshi-sdk] no recipient viewing pubkey available; emitting empty ' +
-          'encryptedNote — recipient will not be able to recover this note by scanning.'
+          'encryptedNote — the recipient will not be able to recover this note ' +
+          'by scanning. Pass recipientViewingPubKey for external recipients.'
       );
       return '0x';
     }
