@@ -275,7 +275,11 @@ export class TransactionBuilder {
     // device), reconcile local state so this note stops being offered as
     // spendable (audit Issue 11 scenario 3) before surfacing the error.
     if (await this.rpcClient.isNullifierSpent(nullifier)) {
-      this.wallet.markNoteSpent(note.commitment!);
+      // commitment may be undefined on a note restored without it — guard so we
+      // surface NoteAlreadySpentError, not an opaque TypeError (audit Q8).
+      if (note.commitment !== undefined) {
+        this.wallet.markNoteSpent(note.commitment);
+      }
       throw new NoteAlreadySpentError();
     }
 
@@ -312,8 +316,8 @@ export class TransactionBuilder {
     // regardless of whether a txHash made it back (relayer async / dropped
     // response), so mark spent on success — not only when txHash is present
     // (audit Issue 11 scenario 2).
-    if (result.success) {
-      this.wallet.markNoteSpent(note.commitment!, result.txHash);
+    if (result.success && note.commitment !== undefined) {
+      this.wallet.markNoteSpent(note.commitment, result.txHash);
     }
 
     return result;
@@ -354,7 +358,11 @@ export class TransactionBuilder {
     // note spent elsewhere stops being offered as spendable (audit Issue 11
     // scenario 3).
     if (await this.rpcClient.isNullifierSpent(nullifier)) {
-      this.wallet.markNoteSpent(inNote.commitment!);
+      // Guard commitment (may be undefined on a restored note) so we throw
+      // NoteAlreadySpentError rather than an opaque TypeError (audit Q8).
+      if (inNote.commitment !== undefined) {
+        this.wallet.markNoteSpent(inNote.commitment);
+      }
       throw new NoteAlreadySpentError();
     }
 
@@ -395,7 +403,9 @@ export class TransactionBuilder {
     // proof, so mark the input note spent on success even if no txHash came
     // back (audit Issue 11 scenario 2).
     if (result.success) {
-      this.wallet.markNoteSpent(inNote.commitment!, result.txHash);
+      if (inNote.commitment !== undefined) {
+        this.wallet.markNoteSpent(inNote.commitment, result.txHash);
+      }
 
       // If transferring to self, track the new output note. Upgrade it to
       // Committed only once we actually have a leafIndex.
@@ -506,21 +516,30 @@ export class TransactionBuilder {
   ): Promise<string> {
     let pubKey = recipientViewingPubKey;
     if (!pubKey) {
-      // Only default to OUR OWN viewing key when we are the note owner
-      // (self-note). Encrypting a note destined for someone else to our own
-      // key would make it unrecoverable for the real recipient (audit Issue 6).
       const ownPub = this.wallet.getPublicKey();
-      if (ownPub !== null && note.owner === ownPub) {
+      const isSelf = ownPub !== null && note.owner === ownPub;
+      if (isSelf) {
+        // Self-note: default to our own viewing key. If we don't even have one
+        // (deprecated generateKeypair path), emit '0x' — we already hold the
+        // note locally, so on-chain recovery isn't needed.
         pubKey = this.wallet.getViewingPubKey() ?? undefined;
+        if (!pubKey) {
+          console.warn(
+            '[atoshi-sdk] no viewing key for self-note; emitting empty ' +
+              'encryptedNote (note is already held locally).'
+          );
+          return '0x';
+        }
+      } else {
+        // External recipient without a viewing key: emitting an empty or
+        // own-key note would make the funds UNRECOVERABLE for the recipient
+        // (they own the note but can't learn its blinding). Fail loud instead
+        // of silently losing it (audit Issue 6).
+        throw new InvalidParamsError(
+          'recipientViewingPubKey is required when sending to another recipient: ' +
+            'without it the recipient cannot recover the note from chain events.'
+        );
       }
-    }
-    if (!pubKey) {
-      console.warn(
-        '[atoshi-sdk] no recipient viewing pubkey available; emitting empty ' +
-          'encryptedNote — the recipient will not be able to recover this note ' +
-          'by scanning. Pass recipientViewingPubKey for external recipients.'
-      );
-      return '0x';
     }
     const blob = await encryptNote(
       {
