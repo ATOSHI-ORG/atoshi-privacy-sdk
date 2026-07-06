@@ -3,17 +3,20 @@
  */
 
 import { FIELD_SIZE } from '../types';
-import * as crypto from 'crypto';
 
 /**
- * Generate a random field element
+ * Generate a random field element.
+ *
+ * Uses the Web Crypto API (globalThis.crypto) so it runs unchanged in the
+ * browser / H5 environment as well as Node 18+, avoiding the Node-only
+ * `crypto.randomBytes` + `Buffer` that break under Vite / Webpack 5.
  */
 export function randomFieldElement(): bigint {
-  const bytes = crypto.randomBytes(32);
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
   // Clear top bits to ensure < 2^253
   bytes[0] &= 0x1f;
-  const value = BigInt('0x' + bytes.toString('hex'));
-  return value % FIELD_SIZE;
+  return fromBytes(bytes) % FIELD_SIZE;
 }
 
 /**

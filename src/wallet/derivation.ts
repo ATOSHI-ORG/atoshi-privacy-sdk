@@ -205,7 +205,9 @@ async function hkdfSha256(
  * truncation is negligible (~2^-128) given the field size.
  */
 function bytesToFieldElement(bytes: Uint8Array): bigint {
-  const hex = "0x" + Buffer.from(bytes).toString("hex");
+  // Manual byte->hex (no Node Buffer) so this runs in the browser / H5.
+  let hex = "0x";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
   return BigInt(hex) % FIELD_SIZE;
 }
 
