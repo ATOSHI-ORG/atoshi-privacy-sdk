@@ -288,10 +288,11 @@ export class TransactionBuilder {
       throw new Error('Note already spent');
     }
 
-    // Create output note
-    const outAmount = params.amount ? BigInt(params.amount.toString()) : inNote.amount;
+    // Create output note. V1 moves the FULL input amount only: the transfer
+    // circuit enforces inAmount === outAmount (no change note), so we never
+    // split (audit Issue 9).
     const outNote = await this.wallet.createNote(
-      outAmount,
+      inNote.amount,
       inNote.tokenId,
       params.recipientPublicKey
     );

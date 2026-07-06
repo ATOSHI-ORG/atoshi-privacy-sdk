@@ -109,7 +109,11 @@ export interface WithdrawParams {
 export interface TransferParams {
   noteIndex: number;
   recipientPublicKey: bigint;
-  amount?: BigNumberish; // Optional: split note
+  // NOTE: V1 transfers move the FULL input note only. The transfer circuit
+  // enforces inAmount === outAmount (no change/split output), so a partial
+  // amount cannot produce a verifiable proof. A split-note `amount` field
+  // was removed here (audit Issue 9); change-note support is a V2 item that
+  // requires coordinated circuit + contract + SDK changes.
 }
 
 /**
