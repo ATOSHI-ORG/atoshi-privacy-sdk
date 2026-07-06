@@ -117,14 +117,40 @@ export async function signSeedDerivation(privateKey: string): Promise<string> {
   );
 }
 
+// secp256k1 group order (n) and its half. ECDSA signatures are malleable:
+// (r, s) and (r, n - s) are both valid for the same message/key. Wallets are
+// free to return either form, so we canonicalize to low-s before deriving the
+// seed (audit Issue 15) — otherwise the same EOA could produce two different
+// seeds and fail to recover its wallet.
+const SECP256K1_N =
+  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const SECP256K1_HALF_N = SECP256K1_N >> 1n;
+
+function bytesToBig(bytes: Uint8Array): bigint {
+  let x = 0n;
+  for (const b of bytes) x = (x << 8n) | BigInt(b);
+  return x;
+}
+
+function bigTo32Bytes(x: bigint): Uint8Array {
+  const out = new Uint8Array(32);
+  for (let i = 31; i >= 0; i--) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return out;
+}
+
 /**
  * Convert a hex EIP-712 signature into a 32-byte master seed via
  * SHA-256 (computeHmac with empty key collapses to HMAC(sig, "") which
  * is unsuitable here — use SHA-256 of the signature bytes instead).
  *
- * The signature is 65 bytes (r || s || v). SHA-256 collapses to 32
- * bytes deterministically regardless of v parity, so the seed is the
- * same whether the wallet returns 27/28 or 0/1 for v.
+ * The signature is 65 bytes (r || s || v). We drop the v byte (so the seed is
+ * independent of the recovery-id encoding — some wallets return 27/28, some
+ * 0/1) AND normalize s to its low form (so a malleated high-s signature from a
+ * different wallet still yields the same seed — audit Issue 15). SHA-256 then
+ * collapses r || low_s to 32 deterministic bytes.
  */
 export async function seedFromEIP712Signature(signature: string): Promise<Seed> {
   const sig = getBytes(signature);
@@ -133,9 +159,12 @@ export async function seedFromEIP712Signature(signature: string): Promise<Seed> 
       `expected 65-byte EIP-712 signature, got ${sig.length} bytes`,
     );
   }
-  // Drop v byte so seed is independent of the recovery-id encoding the
-  // wallet picks (some return 27/28, some 0/1).
-  const sigNoV = sig.slice(0, 64);
+  // Canonicalize to low-s so high-s / low-s equivalents map to one seed.
+  const sBig = bytesToBig(sig.slice(32, 64));
+  const sNorm = sBig > SECP256K1_HALF_N ? SECP256K1_N - sBig : sBig;
+  const sigNoV = new Uint8Array(64);
+  sigNoV.set(sig.slice(0, 32), 0);
+  sigNoV.set(bigTo32Bytes(sNorm), 32);
   const hash = await crypto.subtle.digest("SHA-256", sigNoV);
   return new Uint8Array(hash);
 }
