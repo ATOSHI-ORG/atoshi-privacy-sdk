@@ -8,6 +8,7 @@ import { buildPoseidon } from 'circomlibjs';
 import { Keypair, NoteData, NoteRecord, NoteStatus, WalletConfig, FIELD_SIZE } from '../types';
 import { Note } from '../note';
 import { randomFieldElement, poseidonHash } from '../utils';
+import { viewingPubKey } from '../crypto/ecies';
 import {
   DerivedKeys,
   EncryptedBackup,
@@ -266,6 +267,16 @@ export class PrivacyWallet {
    */
   getPublicKey(): bigint | null {
     return this.keypair?.publicKey ?? null;
+  }
+
+  /**
+   * The wallet's own 32-byte X25519 viewing public key, used to encrypt
+   * incoming notes to this wallet (audit Issue 6). Returns null unless the
+   * wallet was initialized via an initFrom* path (which derives the viewing
+   * key). Share this with a sender so they can encrypt a transfer to you.
+   */
+  getViewingPubKey(): Uint8Array | null {
+    return this.derivedKeys ? viewingPubKey(this.derivedKeys.viewingKey) : null;
   }
 
   /**

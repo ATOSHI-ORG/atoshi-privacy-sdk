@@ -91,6 +91,13 @@ export interface DepositParams {
   amount: BigNumberish;
   tokenAddress: string;
   recipient?: bigint; // Recipient public key (default: self)
+  /**
+   * Recipient's 32-byte X25519 viewing public key. The note's
+   * {amount,tokenId,blinding} is encrypted to this and emitted on-chain so the
+   * recipient can recover the note by scanning (audit Issue 6). Defaults to the
+   * depositor's own viewing pubkey (deposit-to-self).
+   */
+  recipientViewingPubKey?: Uint8Array;
 }
 
 /**
@@ -109,6 +116,14 @@ export interface WithdrawParams {
 export interface TransferParams {
   noteIndex: number;
   recipientPublicKey: bigint;
+  /**
+   * Recipient's 32-byte X25519 viewing public key. The output note's
+   * {amount,tokenId,blinding} is encrypted to this and emitted on-chain so the
+   * recipient can recover the note by scanning (audit Issue 6). Required for a
+   * real recipient; may be omitted only for a self-transfer (defaults to the
+   * sender's own viewing pubkey).
+   */
+  recipientViewingPubKey?: Uint8Array;
   // NOTE: V1 transfers move the FULL input note only. The transfer circuit
   // enforces inAmount === outAmount (no change/split output), so a partial
   // amount cannot produce a verifiable proof. A split-note `amount` field

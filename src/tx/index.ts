@@ -18,7 +18,9 @@ import {
   SdkConfig,
 } from '../types';
 import { PrivacyWallet } from '../wallet';
+import { Note } from '../note';
 import { PrivacyRpcClient } from '../rpc';
+import { encryptNote } from '../crypto/ecies';
 import { toHex, fromHex, withTimeout } from '../utils';
 
 // Upper bound on a single ZK proof generation. snarkjs cannot be truly
@@ -137,7 +139,13 @@ export class TransactionBuilder {
       owner: publicKey.toString(),
       blinding: note.blinding.toString(),
     });
-    const encryptedNote = '0x'; // SDK consumers can plumb a real encryptedNote later
+    // Encrypt {amount,tokenId,blinding} to the recipient's viewing key and
+    // emit it on-chain so the recipient can recover the note by scanning
+    // (audit Issue 6). Defaults to the depositor's own viewing pubkey.
+    const encryptedNote = await this.buildEncryptedNote(
+      note,
+      params.recipientViewingPubKey
+    );
 
     // Submit to the Shield contract (deployed on L2). deposit() requires an
     // L2-connected signer; the earlier "Submit to L1" note was wrong — Shield
@@ -304,6 +312,13 @@ export class TransactionBuilder {
     );
     const outCommitment = outNote.getCommitment()!;
 
+    // Encrypt the output note to the recipient's viewing key so they can
+    // recover it by scanning the on-chain Transfer event (audit Issue 6).
+    const encryptedNote = await this.buildEncryptedNote(
+      outNote,
+      params.recipientViewingPubKey
+    );
+
     // Generate ZK proof
     const proof = await this.generateTransferProof(
       inNote,
@@ -316,7 +331,8 @@ export class TransactionBuilder {
       proof,
       merkleProof.root,
       nullifier,
-      outCommitment
+      outCommitment,
+      encryptedNote
     );
 
     if (result.success && result.txHash) {
@@ -413,6 +429,37 @@ export class TransactionBuilder {
     };
 
     return this.generateProof('transfer', input);
+  }
+
+  /**
+   * Encrypt a note's {amount,tokenId,blinding} to the recipient's viewing key
+   * and return it as a hex `bytes` string for the on-chain encryptedNote
+   * argument / event (audit Issue 6). Falls back to '0x' when no viewing key is
+   * available (e.g. the deprecated generateKeypair path) — the recipient then
+   * cannot recover the note by scanning and must already hold it locally.
+   */
+  private async buildEncryptedNote(
+    note: Note,
+    recipientViewingPubKey?: Uint8Array
+  ): Promise<string> {
+    const pubKey =
+      recipientViewingPubKey ?? this.wallet.getViewingPubKey() ?? undefined;
+    if (!pubKey) {
+      console.warn(
+        '[atoshi-sdk] no recipient viewing pubkey available; emitting empty ' +
+          'encryptedNote — recipient will not be able to recover this note by scanning.'
+      );
+      return '0x';
+    }
+    const blob = await encryptNote(
+      {
+        amount: note.amount.toString(),
+        tokenId: note.tokenId.toString(),
+        blinding: note.blinding.toString(),
+      },
+      pubKey
+    );
+    return ethers.hexlify(blob);
   }
 
   /**

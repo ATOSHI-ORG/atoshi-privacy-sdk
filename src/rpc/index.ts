@@ -214,7 +214,8 @@ export class PrivacyRpcClient {
     proof: ZkProof,
     root: bigint,
     nullifierHash: bigint,
-    newCommitment: bigint
+    newCommitment: bigint,
+    encryptedNote: string = '0x'
   ): Promise<TransactionResult> {
     const result = await this.request<any>('POST', '/api/v1/tx/transfer', {
       proof: {
@@ -225,6 +226,9 @@ export class PrivacyRpcClient {
       root: toHex(root),
       nullifier_hash: toHex(nullifierHash),
       new_commitment: toHex(newCommitment),
+      // Emitted in the on-chain Transfer event so the recipient can recover
+      // the output note by scanning (audit Issue 6).
+      encrypted_note: encryptedNote,
     });
 
     return {
