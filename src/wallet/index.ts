@@ -350,13 +350,15 @@ export class PrivacyWallet {
   /**
    * Mark note as spent
    */
-  markNoteSpent(commitment: bigint, txHash: string): void {
+  markNoteSpent(commitment: bigint, txHash?: string): void {
     const key = commitment.toString();
     const record = this.notes.get(key);
-    
+
     if (record) {
       record.status = NoteStatus.Spent;
       record.spentAt = new Date();
+      // txHash may be absent when we reconcile from an on-chain "nullifier
+      // already spent" check rather than our own submission (audit Issue 11).
       record.spendTxHash = txHash;
     }
   }

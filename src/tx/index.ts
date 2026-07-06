@@ -194,10 +194,14 @@ export class TransactionBuilder {
       receipt.hash
     );
 
+    // The deposit is already on-chain, so always track the note — otherwise a
+    // node that hasn't returned a leafIndex yet would drop it from the wallet
+    // entirely (audit Issue 11 scenario 1). It stays Pending until the leafIndex
+    // is known (from the node here, or later via a chain scan), then upgrades
+    // to Committed.
+    this.wallet.addNote(note);
     if (nodeResult.success && nodeResult.leafIndex !== undefined) {
-      // Update note with leaf index
       note.setLeafIndex(nodeResult.leafIndex);
-      this.wallet.addNote(note);
       this.wallet.markNoteCommitted(commitment, nodeResult.leafIndex, receipt.hash);
     }
 
@@ -233,8 +237,11 @@ export class TransactionBuilder {
     // Compute nullifier
     const nullifier = await this.wallet.computeNullifier(note);
 
-    // Check nullifier not spent
+    // Check nullifier not spent. If it is (e.g. already spent from another
+    // device), reconcile local state so this note stops being offered as
+    // spendable (audit Issue 11 scenario 3) before surfacing the error.
     if (await this.rpcClient.isNullifierSpent(nullifier)) {
+      this.wallet.markNoteSpent(note.commitment!);
       throw new Error('Note already spent');
     }
 
@@ -267,7 +274,11 @@ export class TransactionBuilder {
       params.fee ? BigInt(params.fee.toString()) : 0n
     );
 
-    if (result.success && result.txHash) {
+    // Once the node accepts the proof the nullifier is spent on-chain
+    // regardless of whether a txHash made it back (relayer async / dropped
+    // response), so mark spent on success — not only when txHash is present
+    // (audit Issue 11 scenario 2).
+    if (result.success) {
       this.wallet.markNoteSpent(note.commitment!, result.txHash);
     }
 
@@ -297,8 +308,11 @@ export class TransactionBuilder {
     // Compute nullifier
     const nullifier = await this.wallet.computeNullifier(inNote);
 
-    // Check nullifier not spent
+    // Check nullifier not spent. Reconcile local state before throwing so a
+    // note spent elsewhere stops being offered as spendable (audit Issue 11
+    // scenario 3).
     if (await this.rpcClient.isNullifierSpent(nullifier)) {
+      this.wallet.markNoteSpent(inNote.commitment!);
       throw new Error('Note already spent');
     }
 
@@ -335,14 +349,20 @@ export class TransactionBuilder {
       encryptedNote
     );
 
-    if (result.success && result.txHash) {
+    // The input nullifier is spent on-chain as soon as the node accepts the
+    // proof, so mark the input note spent on success even if no txHash came
+    // back (audit Issue 11 scenario 2).
+    if (result.success) {
       this.wallet.markNoteSpent(inNote.commitment!, result.txHash);
-      
-      // If transferring to self, add the new note
+
+      // If transferring to self, track the new output note. Upgrade it to
+      // Committed only once we actually have a leafIndex.
       if (params.recipientPublicKey === this.wallet.getPublicKey()) {
-        outNote.setLeafIndex(result.leafIndex!);
         this.wallet.addNote(outNote);
-        this.wallet.markNoteCommitted(outCommitment, result.leafIndex!, result.txHash);
+        if (result.leafIndex !== undefined) {
+          outNote.setLeafIndex(result.leafIndex);
+          this.wallet.markNoteCommitted(outCommitment, result.leafIndex, result.txHash ?? '');
+        }
       }
     }
 
