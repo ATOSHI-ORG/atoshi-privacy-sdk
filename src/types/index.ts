@@ -152,24 +152,15 @@ export interface NodeState {
 }
 
 /**
- * SDK configuration
+ * SDK configuration.
+ *
+ * There is a single canonical SdkConfig defined in ../config (the rich,
+ * multi-network shape used by the built-in TESTNET_CONFIG / MAINNET_CONFIG).
+ * It is re-exported here so `import { SdkConfig } from '../types'` and the
+ * package-root export resolve to the SAME type — the previous duplicate
+ * definition (missing nodeUrl) caused a real type mismatch (audit Q7).
  */
-export interface SdkConfig {
-  /** Privacy node RPC URL */
-  nodeUrl: string;
-  
-  /** L1 chain RPC URL */
-  l1RpcUrl: string;
-  
-  /** Shield contract address */
-  shieldContract: string;
-  
-  /** Path to circuit WASM files */
-  circuitsPath?: string;
-  
-  /** Path to proving keys */
-  keysPath?: string;
-}
+export type { SdkConfig } from '../config';
 
 /**
  * Wallet configuration

@@ -17,6 +17,16 @@ export interface SdkConfig {
   /** Human-readable network name, e.g. "atoshi-mainnet" */
   name: string;
 
+  /**
+   * Privacy node RPC base URL — the atoshi-privacy-node that serves the
+   * /api/v1/tx/* and /api/v1/state endpoints. Required by TransactionBuilder
+   * (it submits transfers/withdraws here so msg.sender != note owner). Kept
+   * optional on the shared config type; TransactionBuilder validates its
+   * presence at construction. Merge it into a built-in network config, e.g.
+   * `{ ...TESTNET_CONFIG, nodeUrl: 'https://node.example' }`.
+   */
+  nodeUrl?: string;
+
   // ============ L1 (atoshi-chain) ============
   l1RpcUrl: string;
   l1ChainId: number;

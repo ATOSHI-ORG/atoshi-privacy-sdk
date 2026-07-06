@@ -67,7 +67,8 @@ export {
   DEFAULT_CONFIG,
   validateConfig,
 } from './config';
-export type { SdkConfig } from './config';
+// SdkConfig (canonical, defined in ./config) is surfaced via `export * from
+// './types'`, which re-exports it — single source of truth (audit Q7).
 
 // Version
 export const VERSION = '0.4.1';

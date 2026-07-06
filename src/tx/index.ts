@@ -63,6 +63,15 @@ export class TransactionBuilder {
   private initialized = false;
 
   constructor(wallet: PrivacyWallet, config: SdkConfig) {
+    if (!config.nodeUrl) {
+      // nodeUrl is optional on the shared SdkConfig (built-in network configs
+      // don't hardcode a privacy-node URL), but TransactionBuilder must have it
+      // to submit transfers/withdraws (audit Q7).
+      throw new Error(
+        'SdkConfig.nodeUrl is required for TransactionBuilder — set it, e.g. ' +
+          "{ ...TESTNET_CONFIG, nodeUrl: 'https://<privacy-node>' }"
+      );
+    }
     this.wallet = wallet;
     this.config = config;
     this.rpcClient = new PrivacyRpcClient(config.nodeUrl);
