@@ -96,6 +96,36 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Wrap a promise with a timeout (audit Issue 12).
+ *
+ * The underlying work may keep running — snarkjs proof generation cannot be
+ * truly aborted — but the returned promise rejects after `ms` so callers are
+ * not blocked indefinitely on a slow prover / RPC.
+ */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label = 'operation'
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
+/**
  * Retry function with exponential backoff
  */
 export async function retry<T>(

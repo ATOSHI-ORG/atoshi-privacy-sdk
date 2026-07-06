@@ -15,51 +15,91 @@ import { toHex, fromHex } from '../utils';
  */
 export class PrivacyRpcClient {
   private baseUrl: string;
+  private timeoutMs: number;
 
-  constructor(nodeUrl: string) {
+  constructor(nodeUrl: string, options: { timeoutMs?: number } = {}) {
     this.baseUrl = nodeUrl.replace(/\/$/, '');
+    // Default per-request timeout so a slow/unresponsive node can't hang a
+    // withdraw/transfer flow forever (audit Issue 12). Callers may also pass
+    // their own AbortSignal to cancel in-flight requests.
+    this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
   /**
-   * Make HTTP request
+   * Make HTTP request.
+   *
+   * Every request is bounded by `timeoutMs`; an optional external
+   * `signal` lets the caller cancel it sooner (audit Issue 12).
    */
   private async request<T>(
     method: string,
     path: string,
-    body?: any
+    body?: any,
+    signal?: AbortSignal
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+
     const options: RequestInit = {
       method,
       headers: {
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
     };
 
     if (body) {
       options.body = JSON.stringify(body);
     }
 
-    const response = await fetch(url, options);
+    try {
+      const response = await fetch(url, options);
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`RPC error: ${response.status} - ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`RPC error: ${response.status} - ${error}`);
+      }
+
+      return (await response.json()) as T;
+    } catch (err) {
+      if (timedOut) {
+        throw new Error(
+          `RPC request timed out after ${this.timeoutMs}ms: ${method} ${path}`
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onExternalAbort);
     }
-
-    return (await response.json()) as T;
   }
 
   /**
    * Health check
    */
   async health(): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}/health`);
+      const response = await fetch(`${this.baseUrl}/health`, {
+        signal: controller.signal,
+      });
       return response.ok;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

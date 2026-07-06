@@ -19,7 +19,11 @@ import {
 } from '../types';
 import { PrivacyWallet } from '../wallet';
 import { PrivacyRpcClient } from '../rpc';
-import { toHex, fromHex } from '../utils';
+import { toHex, fromHex, withTimeout } from '../utils';
+
+// Upper bound on a single ZK proof generation. snarkjs cannot be truly
+// aborted, but this releases the caller if the prover stalls (audit Issue 12).
+const PROOF_TIMEOUT_MS = 120_000;
 
 // Shield contract ABI (minimal).
 // Signatures updated for audit 2026-06:
@@ -416,7 +420,11 @@ export class TransactionBuilder {
     const wasmPath = `${this.config.circuitsPath}/${circuit}/${circuit}_js/${circuit}.wasm`;
     const zkeyPath = `${this.config.keysPath}/${circuit}_final.zkey`;
 
-    const { proof } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath);
+    const { proof } = await withTimeout(
+      snarkjs.groth16.fullProve(input, wasmPath, zkeyPath),
+      PROOF_TIMEOUT_MS,
+      `${circuit} proof generation`
+    );
 
     return {
       pA: [proof.pi_a[0], proof.pi_a[1]],
