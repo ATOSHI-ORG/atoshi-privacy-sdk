@@ -70,10 +70,23 @@ export class PrivacyWallet {
   }
 
   /**
-   * Generate a new keypair
+   * Generate a new keypair.
+   *
+   * @deprecated Produces only a raw spending keypair with NO derived viewing /
+   * encryption keys, so the resulting wallet cannot decrypt on-chain
+   * EncryptedNotes (scanner recovery fails), cannot use exportEncrypted(), and
+   * has no recoverable seed if the device is lost (audit Issue 13). Use
+   * initFromEIP712Signature() / initFromMnemonic() / initFromPassphrase()
+   * instead, which derive the full key set. Retained only for tests / advanced
+   * throwaway use.
    */
   async generateKeypair(): Promise<Keypair> {
     this.ensureInitialized();
+    console.warn(
+      '[atoshi-sdk] generateKeypair() is deprecated: it derives no viewing/' +
+        'encryption keys (no note scanning, no encrypted backup, no recovery). ' +
+        'Use initFromEIP712Signature() / initFromMnemonic() / initFromPassphrase().'
+    );
 
     const privateKey = randomFieldElement();
     const publicKey = await this.derivePublicKey(privateKey);
@@ -83,11 +96,29 @@ export class PrivacyWallet {
   }
 
   /**
-   * Import keypair from private key
+   * Import keypair from a raw private key.
+   *
+   * @deprecated Same limitation as generateKeypair(): no derived viewing /
+   * encryption keys are set, so scanning / encrypted export / recovery do not
+   * work (audit Issue 13). Prefer the initFrom* seed-derivation paths.
    */
   async importKeypair(privateKey: bigint): Promise<Keypair> {
     this.ensureInitialized();
+    console.warn(
+      '[atoshi-sdk] importKeypair() is deprecated: it derives no viewing/' +
+        'encryption keys. Prefer initFromEIP712Signature() / initFromMnemonic() / ' +
+        'initFromPassphrase().'
+    );
+    return this.setKeypairFromPrivateKey(privateKey);
+  }
 
+  /**
+   * Internal: set the active keypair from a raw spending private key. Used by
+   * the initFrom* derivation paths and encrypted-backup restore, which already
+   * establish the derived key set separately — so this does NOT warn like the
+   * public (deprecated) importKeypair().
+   */
+  private async setKeypairFromPrivateKey(privateKey: bigint): Promise<Keypair> {
     if (privateKey >= FIELD_SIZE) {
       throw new Error('Private key exceeds field size');
     }
@@ -171,7 +202,7 @@ export class PrivacyWallet {
     // field element. Use it as the wallet's main private key so the
     // existing keypair-based code paths (createNote, computeNullifier,
     // etc.) keep working unchanged.
-    return this.importKeypair(keys.spendingKey);
+    return this.setKeypairFromPrivateKey(keys.spendingKey);
   }
 
   // ==========================================================
@@ -410,8 +441,8 @@ export class PrivacyWallet {
 
     const parsed = JSON.parse(data);
     
-    // Import keypair
-    await this.importKeypair(BigInt(parsed.privateKey));
+    // Import keypair (internal restore path — no deprecation warning)
+    await this.setKeypairFromPrivateKey(BigInt(parsed.privateKey));
 
     // Import notes
     this.notes.clear();

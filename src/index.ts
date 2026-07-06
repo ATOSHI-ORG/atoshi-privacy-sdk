@@ -22,6 +22,15 @@ export {
 } from './crypto/ecies';
 export type { NotePlaintext } from './crypto/ecies';
 
+// EIP-712 seed derivation: users sign SEED_DERIVATION_TYPED_DATA with their
+// EOA (MetaMask) and pass the signature to PrivacyWallet.initFromEIP712Signature
+// to derive the full privacy key set (spending/viewing/encryption).
+export {
+  SEED_DERIVATION_TYPED_DATA,
+  getSeedDerivationDigest,
+  seedFromEIP712Signature,
+} from './wallet/derivation';
+
 // Chain scanner: 增量扫 Shield 事件,自动恢复属于本人的 Note (跨设备恢复用).
 export { ChainScanner } from './scanner';
 export type { ScannerConfig, RecoveredNote } from './scanner';

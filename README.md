@@ -23,19 +23,34 @@ pnpm add @atoshi/privacy-sdk
 ## 🏁 Quick Start
 
 ```typescript
-import { PrivacyWallet, TransactionBuilder, PrivacyRpcClient } from '@atoshi/privacy-sdk';
+import {
+  PrivacyWallet,
+  TransactionBuilder,
+  PrivacyRpcClient,
+  SEED_DERIVATION_TYPED_DATA,
+} from '@atoshi/privacy-sdk';
 import { ethers } from 'ethers';
 
 // Initialize wallet
 const wallet = new PrivacyWallet();
 await wallet.init();
 
-// Generate or import keypair
-const keypair = await wallet.generateKeypair();
+// Derive privacy keys from an EIP-712 signature (recommended). This also
+// derives the viewing + encryption keys needed for note scanning, encrypted
+// backup, and recovery — signing again with the same account reproduces them.
+const signature = await signer.signTypedData(
+  SEED_DERIVATION_TYPED_DATA.domain,
+  SEED_DERIVATION_TYPED_DATA.types,
+  SEED_DERIVATION_TYPED_DATA.message
+);
+const keypair = await wallet.initFromEIP712Signature(signature);
 console.log('Public Key:', keypair.publicKey.toString());
 
-// Or import existing keypair
-// await wallet.importKeypair(BigInt('your_private_key'));
+// Or from a BIP-39 mnemonic:
+// const keypair = await wallet.initFromMnemonic('word1 word2 ... word12');
+//
+// NOTE: generateKeypair() / importKeypair() are deprecated — they derive no
+// viewing/encryption keys, so scanning, encrypted backup, and recovery won't work.
 
 // Setup transaction builder
 const config = {

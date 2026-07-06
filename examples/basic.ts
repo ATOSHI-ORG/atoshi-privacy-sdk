@@ -12,9 +12,13 @@ async function main() {
   const wallet = new PrivacyWallet();
   await wallet.init();
 
-  // 2. Generate keypair
-  console.log('2. Generating keypair...');
-  const keypair = await wallet.generateKeypair();
+  // 2. Derive privacy keys from a mnemonic (recommended). Unlike the
+  //    deprecated generateKeypair(), this also derives the viewing/encryption
+  //    keys required for note scanning, encrypted backup, and recovery.
+  console.log('2. Deriving keys from mnemonic...');
+  const keypair = await wallet.initFromMnemonic(
+    'test test test test test test test test test test test junk'
+  );
   console.log(`   Public Key: ${keypair.publicKey.toString().slice(0, 20)}...`);
 
   // 3. Create a note (simulating deposit)
