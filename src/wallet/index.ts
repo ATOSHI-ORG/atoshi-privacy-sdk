@@ -192,7 +192,14 @@ export class PrivacyWallet {
    * (random key path), which intentionally has no recoverable seed.
    */
   getDerivedKeys(): DerivedKeys | null {
-    return this.derivedKeys;
+    // Return a copy (incl. a fresh Uint8Array) so callers cannot mutate the
+    // wallet's internal key material (audit Issue 16).
+    if (!this.derivedKeys) return null;
+    return {
+      spendingKey: this.derivedKeys.spendingKey,
+      viewingKey: this.derivedKeys.viewingKey,
+      encryptionKey: new Uint8Array(this.derivedKeys.encryptionKey),
+    };
   }
 
   /** Internal: shared completion path for the three initFrom* methods. */
@@ -249,7 +256,8 @@ export class PrivacyWallet {
    * Get current keypair
    */
   getKeypair(): Keypair | null {
-    return this.keypair;
+    // Return a copy so callers cannot mutate the wallet's keypair (audit Issue 16).
+    return this.keypair ? { ...this.keypair } : null;
   }
 
   /**
@@ -345,7 +353,21 @@ export class PrivacyWallet {
    * Get all notes
    */
   getAllNotes(): NoteRecord[] {
-    return Array.from(this.notes.values());
+    // Return copies so callers cannot mutate the wallet's internal note
+    // records (status / leafIndex / note fields) (audit Issue 16).
+    return Array.from(this.notes.values()).map((r) => this.cloneNoteRecord(r));
+  }
+
+  /** Deep-copy a NoteRecord so getters never leak mutable internal state. */
+  private cloneNoteRecord(r: NoteRecord): NoteRecord {
+    return {
+      note: { ...r.note },
+      status: r.status,
+      createdAt: new Date(r.createdAt),
+      spentAt: r.spentAt ? new Date(r.spentAt) : undefined,
+      depositTxHash: r.depositTxHash,
+      spendTxHash: r.spendTxHash,
+    };
   }
 
   /**

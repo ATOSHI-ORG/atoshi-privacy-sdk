@@ -178,14 +178,17 @@ export class NoteManager {
    * Get note by commitment
    */
   get(commitment: bigint): Note | undefined {
-    return this.notes.get(commitment.toString());
+    // Return a clone so callers cannot mutate the managed Note (audit Issue 16).
+    const note = this.notes.get(commitment.toString());
+    return note ? new Note(note.toData()) : undefined;
   }
 
   /**
    * Get all notes
    */
   getAll(): Note[] {
-    return Array.from(this.notes.values());
+    // Clone each Note so callers cannot mutate managed instances (audit Issue 16).
+    return Array.from(this.notes.values()).map((n) => new Note(n.toData()));
   }
 
   /**
