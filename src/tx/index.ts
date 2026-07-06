@@ -139,7 +139,9 @@ export class TransactionBuilder {
     });
     const encryptedNote = '0x'; // SDK consumers can plumb a real encryptedNote later
 
-    // Submit to L1
+    // Submit to the Shield contract (deployed on L2). deposit() requires an
+    // L2-connected signer; the earlier "Submit to L1" note was wrong — Shield
+    // lives on L2 (audit Q5).
     let tx: ethers.TransactionResponse;
 
     if (params.tokenAddress === ethers.ZeroAddress) {

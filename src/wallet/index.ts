@@ -42,11 +42,12 @@ export class PrivacyWallet {
   // Lost on page refresh; the user re-derives via the same EIP-712
   // signature or mnemonic on next login.
   private derivedKeys: DerivedKeys | null = null;
+  // Chain the wallet's notes belong to. Stamped into backups so a restore onto
+  // a different chain is refused (audit Q5). undefined = chain-agnostic (legacy).
+  private chainId?: number;
 
-  constructor(_config: WalletConfig = {}) {
-    // config 当前没被消费,接收参数仅为 API 兼容性
-    // 字段被消费时再恢复 this.config = { storagePrefix: 'atoshi_privacy_', autoSync: true, ..._config };
-    void _config;
+  constructor(config: WalletConfig = {}) {
+    this.chainId = config.chainId;
   }
 
   /**
@@ -433,6 +434,8 @@ export class PrivacyWallet {
     }
 
     const data = {
+      version: 1,
+      chainId: this.chainId,
       privateKey: this.keypair.privateKey.toString(),
       notes: Array.from(this.notes.entries()).map(([key, record]) => ({
         key,
@@ -462,7 +465,20 @@ export class PrivacyWallet {
     this.ensureInitialized();
 
     const parsed = JSON.parse(data);
-    
+
+    // Reject restoring a backup from a different chain: its notes / leafIndex
+    // are meaningless against this chain's Shield tree (audit Q5). Only enforce
+    // when both sides declare a chainId (legacy backups have none).
+    if (
+      parsed.chainId !== undefined &&
+      this.chainId !== undefined &&
+      parsed.chainId !== this.chainId
+    ) {
+      throw new Error(
+        `wallet backup is for chainId ${parsed.chainId}, but this wallet is configured for chainId ${this.chainId}`
+      );
+    }
+
     // Import keypair (internal restore path — no deprecation warning)
     await this.setKeypairFromPrivateKey(BigInt(parsed.privateKey));
 

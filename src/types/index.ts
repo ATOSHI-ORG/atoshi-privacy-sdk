@@ -162,8 +162,17 @@ export interface SdkConfig {
 export interface WalletConfig {
   /** Storage key prefix */
   storagePrefix?: string;
-  
+
   /** Auto-sync notes on init */
   autoSync?: boolean;
+
+  /**
+   * Chain id of the network whose Shield this wallet's notes belong to.
+   * Notes / leafIndex are chain-specific (a leaf position in one chain's
+   * Shield tree is meaningless on another), so backups are stamped with this
+   * and a restore onto a different chainId is rejected (audit Q5). The derived
+   * keys themselves are chain-independent by design.
+   */
+  chainId?: number;
 }
 
