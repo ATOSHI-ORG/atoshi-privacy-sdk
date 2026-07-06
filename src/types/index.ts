@@ -62,6 +62,13 @@ export interface NoteRecord {
   spentAt?: Date;
   depositTxHash?: string;
   spendTxHash?: string;
+  /**
+   * L2 block at which the note's leafIndex was recorded. Used for reorg
+   * reconciliation (audit Issue 14): a note committed at a shallow depth may
+   * have its leaf position shifted by a reorg, so its cached leafIndex must be
+   * re-validated against the current chain before it is spent.
+   */
+  committedAtBlock?: number;
 }
 
 /**

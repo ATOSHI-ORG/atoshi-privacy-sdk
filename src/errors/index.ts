@@ -22,7 +22,8 @@ export type AtoshiErrorCode =
   | 'RPC_ERROR'
   | 'TIMEOUT'
   | 'PROOF_ERROR'
-  | 'TX_FAILED';
+  | 'TX_FAILED'
+  | 'STALE_LEAF_INDEX';
 
 /** Base class for every error the SDK throws. */
 export class AtoshiSdkError extends Error {
@@ -101,5 +102,19 @@ export class ProofError extends AtoshiSdkError {
   constructor(message: string) {
     super('PROOF_ERROR', message);
     this.name = 'ProofError';
+  }
+}
+
+/**
+ * A note's cached leafIndex no longer matches the on-chain leaf at that
+ * position — typically caused by a block reorg (audit Issue 14). The note has
+ * been reverted to Pending and must be re-recovered (rescan) before spending.
+ */
+export class StaleLeafIndexError extends AtoshiSdkError {
+  constructor(
+    message = 'Note leafIndex is stale (possible reorg); re-scan before spending'
+  ) {
+    super('STALE_LEAF_INDEX', message);
+    this.name = 'StaleLeafIndexError';
   }
 }

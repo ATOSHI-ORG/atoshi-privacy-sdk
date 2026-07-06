@@ -346,14 +346,36 @@ export class PrivacyWallet {
    *
    * @internal Wallet-state mutation used by TransactionBuilder; not public API.
    */
-  markNoteCommitted(commitment: bigint, leafIndex: number, txHash: string): void {
+  markNoteCommitted(
+    commitment: bigint,
+    leafIndex: number,
+    txHash: string,
+    blockNumber?: number
+  ): void {
     const key = commitment.toString();
     const record = this.notes.get(key);
-    
+
     if (record) {
       record.status = NoteStatus.Committed;
       record.note.leafIndex = leafIndex;
       record.depositTxHash = txHash;
+      record.committedAtBlock = blockNumber;
+    }
+  }
+
+  /**
+   * Revert a committed note to Pending and clear its cached leafIndex after a
+   * reorg is detected (audit Issue 14). The note must be re-recovered (via
+   * ChainScanner) to obtain a fresh, valid leafIndex before it can be spent.
+   *
+   * @internal Wallet-state mutation used by TransactionBuilder; not public API.
+   */
+  invalidateCommittedNote(commitment: bigint): void {
+    const record = this.notes.get(commitment.toString());
+    if (record) {
+      record.status = NoteStatus.Pending;
+      record.note.leafIndex = undefined;
+      record.committedAtBlock = undefined;
     }
   }
 
@@ -396,6 +418,7 @@ export class PrivacyWallet {
       spentAt: r.spentAt ? new Date(r.spentAt) : undefined,
       depositTxHash: r.depositTxHash,
       spendTxHash: r.spendTxHash,
+      committedAtBlock: r.committedAtBlock,
     };
   }
 
@@ -487,6 +510,7 @@ export class PrivacyWallet {
         spentAt: record.spentAt?.toISOString(),
         depositTxHash: record.depositTxHash,
         spendTxHash: record.spendTxHash,
+        committedAtBlock: record.committedAtBlock,
       })),
     };
 
@@ -537,6 +561,7 @@ export class PrivacyWallet {
         spentAt: item.spentAt ? new Date(item.spentAt) : undefined,
         depositTxHash: item.depositTxHash,
         spendTxHash: item.spendTxHash,
+        committedAtBlock: item.committedAtBlock,
       });
     }
   }

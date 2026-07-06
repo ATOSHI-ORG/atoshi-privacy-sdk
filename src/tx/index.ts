@@ -16,6 +16,7 @@ import {
   ZkProof,
   MerkleProof,
   SdkConfig,
+  NoteStatus,
 } from '../types';
 import { PrivacyWallet } from '../wallet';
 import { Note } from '../note';
@@ -29,6 +30,7 @@ import {
   NoteNotCommittedError,
   NoteAlreadySpentError,
   ProofError,
+  StaleLeafIndexError,
   AtoshiSdkError,
 } from '../errors';
 
@@ -220,7 +222,12 @@ export class TransactionBuilder {
     this.wallet.addNote(note);
     if (nodeResult.success && nodeResult.leafIndex !== undefined) {
       note.setLeafIndex(nodeResult.leafIndex);
-      this.wallet.markNoteCommitted(commitment, nodeResult.leafIndex, receipt.hash);
+      this.wallet.markNoteCommitted(
+        commitment,
+        nodeResult.leafIndex,
+        receipt.hash,
+        receipt.blockNumber
+      );
     }
 
     return {
@@ -251,6 +258,15 @@ export class TransactionBuilder {
 
     // Get Merkle proof
     const merkleProof = await this.rpcClient.getMerkleProof(note.leafIndex);
+
+    // Reorg guard: the on-chain leaf at our cached index must still equal this
+    // note's commitment. If a reorg shifted the position, the cached leafIndex
+    // is stale and would produce an invalid proof / wrong nullifier — revert
+    // the note to Pending and fail loud instead (audit Issue 14).
+    if (note.commitment !== undefined && merkleProof.leaf !== note.commitment) {
+      this.wallet.invalidateCommittedNote(note.commitment);
+      throw new StaleLeafIndexError();
+    }
 
     // Compute nullifier
     const nullifier = await this.wallet.computeNullifier(note);
@@ -322,6 +338,14 @@ export class TransactionBuilder {
 
     // Get Merkle proof
     const merkleProof = await this.rpcClient.getMerkleProof(inNote.leafIndex);
+
+    // Reorg guard (audit Issue 14): the leaf at our cached index must still be
+    // this note's commitment, else the leafIndex is stale (reorg) and would
+    // yield an invalid proof — revert to Pending and fail loud.
+    if (inNote.commitment !== undefined && merkleProof.leaf !== inNote.commitment) {
+      this.wallet.invalidateCommittedNote(inNote.commitment);
+      throw new StaleLeafIndexError();
+    }
 
     // Compute nullifier
     const nullifier = await this.wallet.computeNullifier(inNote);
@@ -498,6 +522,38 @@ export class TransactionBuilder {
       pubKey
     );
     return ethers.hexlify(blob);
+  }
+
+  /**
+   * Re-validate every committed note's cached leafIndex against the current
+   * chain (audit Issue 14). If a reorg shifted a note's leaf position, the
+   * on-chain leaf at that index no longer equals the note's commitment; such
+   * notes are reverted to Pending (leafIndex cleared) so they are not spent
+   * with a stale index, and their commitments are returned so the caller can
+   * trigger a re-scan (ChainScanner) to recover a fresh leafIndex.
+   *
+   * Transient RPC failures are skipped (note left as-is) so a flaky node does
+   * not wrongly invalidate good notes.
+   */
+  async reconcileNotes(): Promise<bigint[]> {
+    this.ensureInitialized();
+    const invalidated: bigint[] = [];
+    for (const record of this.wallet.getAllNotes()) {
+      if (record.status !== NoteStatus.Committed) continue;
+      const { commitment, leafIndex } = record.note;
+      if (commitment === undefined || leafIndex === undefined) continue;
+      let proof: MerkleProof;
+      try {
+        proof = await this.rpcClient.getMerkleProof(leafIndex);
+      } catch {
+        continue; // transient RPC error — retry on a later reconcile
+      }
+      if (proof.leaf !== commitment) {
+        this.wallet.invalidateCommittedNote(commitment);
+        invalidated.push(commitment);
+      }
+    }
+    return invalidated;
   }
 
   /**
