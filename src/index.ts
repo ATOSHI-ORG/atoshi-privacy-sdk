@@ -50,6 +50,10 @@ export {
 export { rebuildMerkleTree } from './merkle';
 export type { MerklePath, MerkleTreeData } from './merkle';
 
+// Typed errors: consumers can `instanceof AtoshiSdkError` / branch on `.code`
+// instead of string-matching messages (audit Q8).
+export * from './errors';
+
 // Types
 export * from './types';
 

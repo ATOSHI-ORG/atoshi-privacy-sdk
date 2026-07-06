@@ -9,6 +9,7 @@ import {
   ZkProof 
 } from '../types';
 import { toHex, fromHex } from '../utils';
+import { RpcError, TimeoutError } from '../errors';
 
 /**
  * Privacy RPC client
@@ -68,13 +69,16 @@ export class PrivacyRpcClient {
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`RPC error: ${response.status} - ${error}`);
+        throw new RpcError(
+          `RPC error: ${response.status} - ${error}`,
+          response.status
+        );
       }
 
       return (await response.json()) as T;
     } catch (err) {
       if (timedOut) {
-        throw new Error(
+        throw new TimeoutError(
           `RPC request timed out after ${this.timeoutMs}ms: ${method} ${path}`
         );
       }
@@ -252,7 +256,7 @@ export class PrivacyRpcClient {
     });
 
     if (result.error) {
-      throw new Error(`RPC error: ${result.error.message}`);
+      throw new RpcError(`RPC error: ${result.error.message}`);
     }
 
     return result.result;

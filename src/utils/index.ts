@@ -3,6 +3,7 @@
  */
 
 import { FIELD_SIZE } from '../types';
+import { TimeoutError } from '../errors';
 
 /**
  * Generate a random field element.
@@ -109,7 +110,7 @@ export function withTimeout<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      () => reject(new TimeoutError(`${label} timed out after ${ms}ms`)),
       ms
     );
     promise.then(

@@ -22,6 +22,15 @@ import { Note } from '../note';
 import { PrivacyRpcClient } from '../rpc';
 import { encryptNote } from '../crypto/ecies';
 import { toHex, fromHex, withTimeout } from '../utils';
+import {
+  NotInitializedError,
+  InvalidParamsError,
+  NoteNotFoundError,
+  NoteNotCommittedError,
+  NoteAlreadySpentError,
+  ProofError,
+  AtoshiSdkError,
+} from '../errors';
 
 // Upper bound on a single ZK proof generation. snarkjs cannot be truly
 // aborted, but this releases the caller if the prover stalls (audit Issue 12).
@@ -67,7 +76,7 @@ export class TransactionBuilder {
       // nodeUrl is optional on the shared SdkConfig (built-in network configs
       // don't hardcode a privacy-node URL), but TransactionBuilder must have it
       // to submit transfers/withdraws (audit Q7).
-      throw new Error(
+      throw new InvalidParamsError(
         'SdkConfig.nodeUrl is required for TransactionBuilder — set it, e.g. ' +
           "{ ...TESTNET_CONFIG, nodeUrl: 'https://<privacy-node>' }"
       );
@@ -112,7 +121,7 @@ export class TransactionBuilder {
    */
   private ensureInitialized(): void {
     if (!this.initialized) {
-      throw new Error('TransactionBuilder not initialized. Call init() first.');
+      throw new NotInitializedError('TransactionBuilder not initialized. Call init() first.');
     }
   }
 
@@ -123,12 +132,12 @@ export class TransactionBuilder {
     this.ensureInitialized();
 
     if (!this.signer || !this.shieldContract) {
-      throw new Error('Signer required for deposit');
+      throw new InvalidParamsError('Signer required for deposit');
     }
 
     const publicKey = params.recipient ?? this.wallet.getPublicKey();
     if (!publicKey) {
-      throw new Error('No recipient specified');
+      throw new InvalidParamsError('No recipient specified');
     }
 
     // Create note
@@ -232,12 +241,12 @@ export class TransactionBuilder {
     // Get note
     const noteRecord = this.wallet.getNoteByIndex(params.noteIndex);
     if (!noteRecord) {
-      throw new Error('Note not found');
+      throw new NoteNotFoundError();
     }
 
     const note = noteRecord.note;
     if (note.leafIndex === undefined) {
-      throw new Error('Note not committed');
+      throw new NoteNotCommittedError('Note not committed');
     }
 
     // Get Merkle proof
@@ -251,7 +260,7 @@ export class TransactionBuilder {
     // spendable (audit Issue 11 scenario 3) before surfacing the error.
     if (await this.rpcClient.isNullifierSpent(nullifier)) {
       this.wallet.markNoteSpent(note.commitment!);
-      throw new Error('Note already spent');
+      throw new NoteAlreadySpentError();
     }
 
     // Generate ZK proof. The unshield circuit now binds `relayer` into
@@ -262,7 +271,7 @@ export class TransactionBuilder {
     const relayer = params.relayer ?? '0x0000000000000000000000000000000000000000';
     const fee = params.fee ? BigInt(params.fee.toString()) : 0n;
     if (fee > 0n && relayer === '0x0000000000000000000000000000000000000000') {
-      throw new Error('A non-zero relayer address is required when fee > 0');
+      throw new InvalidParamsError('A non-zero relayer address is required when fee > 0');
     }
     const proof = await this.generateWithdrawProof(
       note,
@@ -303,12 +312,12 @@ export class TransactionBuilder {
     // Get input note
     const noteRecord = this.wallet.getNoteByIndex(params.noteIndex);
     if (!noteRecord) {
-      throw new Error('Note not found');
+      throw new NoteNotFoundError();
     }
 
     const inNote = noteRecord.note;
     if (inNote.leafIndex === undefined) {
-      throw new Error('Note not committed');
+      throw new NoteNotCommittedError('Note not committed');
     }
 
     // Get Merkle proof
@@ -322,7 +331,7 @@ export class TransactionBuilder {
     // scenario 3).
     if (await this.rpcClient.isNullifierSpent(nullifier)) {
       this.wallet.markNoteSpent(inNote.commitment!);
-      throw new Error('Note already spent');
+      throw new NoteAlreadySpentError();
     }
 
     // Create output note. V1 moves the FULL input amount only: the transfer
@@ -397,7 +406,7 @@ export class TransactionBuilder {
   ): Promise<ZkProof> {
     const keypair = this.wallet.getKeypair();
     if (!keypair) {
-      throw new Error('No keypair loaded');
+      throw new InvalidParamsError('No keypair loaded');
     }
 
     const input = {
@@ -432,7 +441,7 @@ export class TransactionBuilder {
   ): Promise<ZkProof> {
     const keypair = this.wallet.getKeypair();
     if (!keypair) {
-      throw new Error('No keypair loaded');
+      throw new InvalidParamsError('No keypair loaded');
     }
 
     const input = {
@@ -498,11 +507,21 @@ export class TransactionBuilder {
     const wasmPath = `${this.config.circuitsPath}/${circuit}/${circuit}_js/${circuit}.wasm`;
     const zkeyPath = `${this.config.keysPath}/${circuit}_final.zkey`;
 
-    const { proof } = await withTimeout(
-      snarkjs.groth16.fullProve(input, wasmPath, zkeyPath),
-      PROOF_TIMEOUT_MS,
-      `${circuit} proof generation`
-    );
+    let proof;
+    try {
+      ({ proof } = await withTimeout(
+        snarkjs.groth16.fullProve(input, wasmPath, zkeyPath),
+        PROOF_TIMEOUT_MS,
+        `${circuit} proof generation`
+      ));
+    } catch (err) {
+      // Preserve typed SDK errors (e.g. TimeoutError from withTimeout); wrap
+      // any other snarkjs failure as a typed ProofError (audit Q8).
+      if (err instanceof AtoshiSdkError) throw err;
+      throw new ProofError(
+        `${circuit} proof generation failed: ${(err as Error).message}`
+      );
+    }
 
     return {
       pA: [proof.pi_a[0], proof.pi_a[1]],
