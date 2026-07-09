@@ -4,6 +4,11 @@
 > 适用场景：网页 / 钱包内嵌 webview / 移动浏览器
 > 最低要求：现代浏览器（Chrome 90+ / Safari 14+ / Edge 90+），需支持 Web Crypto API
 
+> ⚠️ 说明：下文的合约地址 / RPC 为**当前测试网**部署值，L2 重新部署（含上线前
+> trusted-setup ceremony）后会变更，届时以最新部署清单为准。低层合约调用示例仅用
+> 于理解流程；实际集成请优先使用 SDK 高层 API（`TransactionBuilder` 等），它已封装
+> proof 生成与合约调用。
+
 ---
 
 ## 0. 系统全景图（必读）
@@ -42,7 +47,7 @@
               ┌─────────────────────────────┐
               │  Atoshi L2 (chain 67890)    │
               │  Shield 合约                │
-              │  0x2942ACf67055...8CBa8C    │
+              │  0xB515a4a438c1...af5625    │
               └─────────────────────────────┘
 ```
 
@@ -145,13 +150,15 @@ import {
 import { buildPoseidon } from 'circomlibjs';
 
 // SHIELD_ADDR 来自配置
-const SHIELD_ADDR = '0x2942ACf67055b1520904227d13789cc03C8CBa8C';
+const SHIELD_ADDR = '0xB515a4a438c168cf34F1ABEEa40a835a39af5625';
 const NATIVE_TOKEN = '0x0000000000000000000000000000000000000000';
 
 async function shield(amountAatos: bigint, keys: DerivedKeys) {
   // 1. 生成随机 blinding
   const blindingBytes = crypto.getRandomValues(new Uint8Array(31));
-  const blinding = BigInt('0x' + Buffer.from(blindingBytes).toString('hex'));
+  const blinding = BigInt(
+    '0x' + [...blindingBytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+  );
 
   // 2. 算 commitment = Poseidon(amount, tokenId=0, ownerPubkey, blinding)
   //    ownerPubkey = Poseidon(spendingKey)
@@ -173,16 +180,22 @@ async function shield(amountAatos: bigint, keys: DerivedKeys) {
   );
 
   // 4. 调 Shield.deposit
+  //    ⚠️ deposit 现在需要一个 ZK proof(证明 commitment 由 amount/tokenId/owner/
+  //    blinding 正确生成)。建议直接用 SDK 高层 API,它已封装 proof 生成:
+  //        const tb = new TransactionBuilder(wallet, config);
+  //        await tb.deposit({ amount: amountAatos, tokenAddress: NATIVE_TOKEN });
+  //    若坚持手写,ABI 前三个参数是 proof:
   const signer = await getSigner();
   const shieldAbi = [
-    'function deposit(uint256 commitment, address token, uint256 amount, bytes encryptedNote) external payable',
+    'function deposit(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 commitment, address token, uint256 amount, bytes encryptedNote) external payable',
   ];
   const shield = new ethers.Contract(SHIELD_ADDR, shieldAbi, signer);
   const tx = await shield.deposit(
+    pA, pB, pC,              // ← ZK proof(snarkjs 生成,做法见 Step 4)
     commitment,
     NATIVE_TOKEN,
     amountAatos,
-    '0x' + Buffer.from(encryptedNote).toString('hex'),
+    ethers.hexlify(encryptedNote),
     { value: amountAatos, gasLimit: 1_500_000n },
   );
   const receipt = await tx.wait();
@@ -301,7 +314,9 @@ async function transfer(
 
   // 给 Bob 的新 Note
   const newBlindingBytes = crypto.getRandomValues(new Uint8Array(31));
-  const newBlinding = BigInt('0x' + Buffer.from(newBlindingBytes).toString('hex'));
+  const newBlinding = BigInt(
+    '0x' + [...newBlindingBytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+  );
   const newCommitment = F.toObject(
     poseidon([oldNote.amount, 0n, bobOwnerPubkey, newBlinding])
   );
@@ -330,8 +345,8 @@ import { ChainScanner } from '@atoshi/privacy-sdk';
 
 async function restoreNotesFromChain(keys: DerivedKeys) {
   const scanner = new ChainScanner({
-    rpcUrl: 'http://52.76.210.218:8123',
-    shieldAddress: '0x2942ACf67055b1520904227d13789cc03C8CBa8C',
+    rpcUrl: 'https://l2-rpc1-testnet.atoshi.org',
+    shieldAddress: '0xB515a4a438c168cf34F1ABEEa40a835a39af5625',
     fromBlock: 0,                  // 首次启动从 0 开始扫
     chunkSize: 9000,               // 单批最多扫 9000 块 (RPC 限制)
   });
@@ -388,7 +403,7 @@ async function restoreNotesFromChain(keys: DerivedKeys) {
 │       └── indexed-db.ts            ← Note + keys 本地持久化
 ```
 
-**电路文件来源**: `/Users/liudongqi/atoshi/atoshi-privacy-circuits/build/{transfer,unshield}/` 和 `/Users/liudongqi/atoshi/atoshi-privacy-circuits/keys/`
+**电路文件来源**: `atoshi-privacy-circuits` 仓库的 `build/{transfer,unshield}/` 与 `keys/` 目录（构建时拷进前端 `public/circuits/`）。
 
 ---
 
@@ -445,19 +460,20 @@ import { ChainScanner } from '@atoshi/privacy-sdk';
 ## 7. 配置常量
 
 ```typescript
-// L2 网络
-export const L2_RPC_URL = 'http://52.76.210.218:8123';
+// L2 网络 (当前测试网; 重新部署后更新)
+export const L2_RPC_URL = 'https://l2-rpc1-testnet.atoshi.org';
 export const L2_CHAIN_ID = 67890;
 
-// 合约地址 (2026-05-28 部署,带 encryptedNote 支持)
-export const SHIELD_ADDR = '0x2942ACf67055b1520904227d13789cc03C8CBa8C';
+// 合约地址 (当前测试网部署; ceremony 重部署后会变)
+export const SHIELD_ADDR = '0xB515a4a438c168cf34F1ABEEa40a835a39af5625';
+export const SHIELD_VERIFIER = '0x8409B3Fd5b7F48678AA8D0Ffc97aDFa18612dA6A'; // deposit 电路 verifier
 export const TRANSFER_VERIFIER = '0x14B3743E87d75786Ce350cAF26e1F719Ae5c0825';
 export const UNSHIELD_VERIFIER = '0xa7944803e80B93952e9421622A4aBf75E77B5D17';
 export const POSEIDON_CONTRACT = '0xC1d3Bb5B7b9f4f097e7cD0126608D498A2986DAe';
 
 // 协议常量
 export const NATIVE_TOKEN = '0x0000000000000000000000000000000000000000';
-export const TREE_LEVELS = 20;
+export const TREE_LEVELS = 32;
 export const BN254_FIELD_SIZE = BigInt(
   '21888242871839275222246405745257275088548364400416034343698204186575808495617',
 );
@@ -468,29 +484,21 @@ export const PROTOCOL_FEE_BPS = 30; // 0.3% (在 Unshield 时扣)
 
 ## 8. 参考代码
 
-最完整的参考实现：[`/Users/liudongqi/shield`](/Users/liudongqi/shield)
-- React + Vite + wagmi + rainbowkit
-- 完整 UI（Setup / PublicDashboard / PrivateDashboard / ActionModal）
-- 已经接好新 Shield 0x2942ACf6 + encryptedNote ABI
+参考前端实现：内部 `shield` dApp 仓库（React + Vite + wagmi + rainbowkit），
+含完整 UI（Setup / PublicDashboard / PrivateDashboard / ActionModal），已接入
+当前 Shield + encryptedNote ABI。
 
-跑起来：
-```bash
-cd /Users/liudongqi/shield
-npm install
-npm run dev   # 启动 http://localhost:5173
-```
-
-数据流参考：[`/Users/liudongqi/atoshi/atoshi-privacy-contracts/scripts/l2-e2e-test.js`](/Users/liudongqi/atoshi/atoshi-privacy-contracts/scripts/l2-e2e-test.js)
-- 完整跑通 Shield → Merkle 重建 → ZK proof → Unshield → 双花保护
-- 是 H5 端业务流程的"权威实现"，前端就照它的步骤写
+端到端数据流的权威实现：`atoshi-privacy-contracts` 仓库的
+`scripts/l2-e2e-test.js` —— 完整跑通 Shield → Merkle 重建 → ZK proof →
+Unshield → 双花保护，前端照它的步骤写即可。
 
 ---
 
-## 9. 安全与信任假设（审计 Q1 / Q4 / Q8）
+## 9. 安全与信任假设
 
 集成方必须知道以下信任边界：
 
-- **前端长期持有密钥（Q4）**：SDK 在 H5 运行环境中持有 wallet / derived keys /
+- **前端长期持有密钥**：SDK 在 H5 运行环境中持有 wallet / derived keys /
   note 等敏感数据，安全边界弱于 MetaMask 扩展隔离私钥的模式。要求：
   - 用 `exportEncrypted()`（AES-256-GCM）加密后再落 IndexedDB，切勿明文存
     spending/viewing key；
@@ -498,7 +506,7 @@ npm run dev   # 启动 http://localhost:5173
     脚本直接读到密钥；
   - 密钥仅在内存，刷新即失效，靠同一 EOA 签名 / 助记词重新派生。
 
-- **relayer 自营、无手续费、靠限流防刷（Q1 / Q8）**：当前隐私转账 `transfer()`
+- **relayer 自营、无手续费、靠限流防刷**：当前隐私转账 `transfer()`
   不收 fee，relayer（privacy node）由项目方自营并补贴 gas。含义：
   - 转账隐私依赖 relayer 在线（liveness 依赖）；relayer 不可用时无法发起隐私转账；
   - 因转账免费，relayer 侧按 IP / 账户做速率限制以防刷；
@@ -508,12 +516,12 @@ npm run dev   # 启动 http://localhost:5173
 - **接收方须提供 viewing pubkey**：给他人转账 / 存款时必须传 `recipientViewingPubKey`，
   否则 SDK 抛错拒绝（否则接收方无法解密恢复该 note）。
 
-> 注意：本文档第 3 节的 `deposit(...)` 示例为早期版本；审计修复后 `deposit()` 需带 ZK
-> proof（`pA,pB,pC,commitment,token,amount,encryptedNote`）。请以 SDK 的
-> `TransactionBuilder.deposit()` 为准，它已封装 proof 生成。
+> 注意：`deposit()` / `withdraw()` / `transfer()` 现在都需要 ZK proof。请优先用 SDK
+> 高层 API（`TransactionBuilder`），它已封装 proof 生成；本文档第 2 节的手写合约调用
+> 仅供理解流程，不要照抄旧 ABI。
 
 ---
 
 ## 10. 提问 / Issue
 
-技术问题：项目根目录 `PLAN.md` 有完整设计文档 + 已知问题清单。
+技术问题请联系 SDK 维护团队；接口说明见仓库 `README.md` 与本文件。
