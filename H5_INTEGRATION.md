@@ -486,6 +486,34 @@ npm run dev   # 启动 http://localhost:5173
 
 ---
 
-## 9. 提问 / Issue
+## 9. 安全与信任假设（审计 Q1 / Q4 / Q8）
+
+集成方必须知道以下信任边界：
+
+- **前端长期持有密钥（Q4）**：SDK 在 H5 运行环境中持有 wallet / derived keys /
+  note 等敏感数据，安全边界弱于 MetaMask 扩展隔离私钥的模式。要求：
+  - 用 `exportEncrypted()`（AES-256-GCM）加密后再落 IndexedDB，切勿明文存
+    spending/viewing key；
+  - 尽量把 SDK 放在独立上下文（iframe / web worker 沙箱）运行，避免业务页面
+    脚本直接读到密钥；
+  - 密钥仅在内存，刷新即失效，靠同一 EOA 签名 / 助记词重新派生。
+
+- **relayer 自营、无手续费、靠限流防刷（Q1 / Q8）**：当前隐私转账 `transfer()`
+  不收 fee，relayer（privacy node）由项目方自营并补贴 gas。含义：
+  - 转账隐私依赖 relayer 在线（liveness 依赖）；relayer 不可用时无法发起隐私转账；
+  - 因转账免费，relayer 侧按 IP / 账户做速率限制以防刷；
+  - relayer 广播交易使链上 `msg.sender ≠ note owner`，是隐私不可关联性的前提——
+    切勿让 note owner 的 EOA 自广播转账。
+
+- **接收方须提供 viewing pubkey**：给他人转账 / 存款时必须传 `recipientViewingPubKey`，
+  否则 SDK 抛错拒绝（否则接收方无法解密恢复该 note）。
+
+> 注意：本文档第 3 节的 `deposit(...)` 示例为早期版本；审计修复后 `deposit()` 需带 ZK
+> proof（`pA,pB,pC,commitment,token,amount,encryptedNote`）。请以 SDK 的
+> `TransactionBuilder.deposit()` 为准，它已封装 proof 生成。
+
+---
+
+## 10. 提问 / Issue
 
 技术问题：项目根目录 `PLAN.md` 有完整设计文档 + 已知问题清单。
