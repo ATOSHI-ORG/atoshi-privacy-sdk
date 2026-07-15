@@ -20,6 +20,7 @@ import {
 } from '../types';
 import { PrivacyWallet } from '../wallet';
 import { Note } from '../note';
+import type { RecoveredNote } from '../scanner';
 import { PrivacyRpcClient } from '../rpc';
 import { encryptNote } from '../crypto/ecies';
 import { toHex, fromHex, withTimeout } from '../utils';
@@ -582,6 +583,84 @@ export class TransactionBuilder {
       }
     }
     return invalidated;
+  }
+
+  /**
+   * Merge notes recovered by ChainScanner into the wallet's note store (audit
+   * Issue 11 / Q6). The scanner only returns RecoveredNote[]; before this there
+   * was no supported path to get them into the wallet (addNote is @internal), so
+   * cross-device recovery could not rebuild the user's spendable note set.
+   *
+   * For each recovered note:
+   *  - already tracked & Spent  → skipped (never resurrect a spent note);
+   *  - leafIndex >= 0           → added and marked Committed (spendable);
+   *  - leafIndex < 0            → added as Pending (a transfer output whose
+   *                               leafIndex the scanner could not yet derive on
+   *                               an incremental scan — not spendable until a
+   *                               full scan resolves it).
+   *
+   * The scanner has already cryptographically validated every RecoveredNote
+   * against this wallet's owner pubkey (re-hashed commitment match), so all
+   * inputs here belong to this wallet. Idempotent: re-importing is a no-op for
+   * already-tracked notes (addNote skips existing keys; re-committing is stable).
+   *
+   * @returns commitments grouped by outcome, so the caller can surface
+   *          not-yet-spendable notes and trigger a full re-scan if needed.
+   */
+  importRecoveredNotes(notes: RecoveredNote[]): {
+    committed: bigint[];
+    pending: bigint[];
+    skipped: bigint[];
+  } {
+    this.ensureInitialized();
+    const owner = this.wallet.getPublicKey();
+    if (owner === null) {
+      throw new NotInitializedError(
+        'wallet has no keypair; initialize it (initFrom*) before importing recovered notes'
+      );
+    }
+
+    // Snapshot existing statuses so we never re-commit an already-spent note.
+    const statusByCommitment = new Map<string, NoteStatus>();
+    for (const record of this.wallet.getAllNotes()) {
+      if (record.note.commitment !== undefined) {
+        statusByCommitment.set(record.note.commitment.toString(), record.status);
+      }
+    }
+
+    const committed: bigint[] = [];
+    const pending: bigint[] = [];
+    const skipped: bigint[] = [];
+
+    for (const rec of notes) {
+      if (statusByCommitment.get(rec.commitment.toString()) === NoteStatus.Spent) {
+        skipped.push(rec.commitment);
+        continue;
+      }
+
+      const note = new Note({
+        amount: rec.amount,
+        tokenId: rec.tokenId,
+        owner,
+        blinding: rec.blinding,
+        commitment: rec.commitment,
+      });
+      this.wallet.addNote(note); // adds as Pending; no-op if already tracked
+
+      if (rec.leafIndex >= 0) {
+        this.wallet.markNoteCommitted(
+          rec.commitment,
+          rec.leafIndex,
+          rec.txHash,
+          rec.blockNumber
+        );
+        committed.push(rec.commitment);
+      } else {
+        pending.push(rec.commitment);
+      }
+    }
+
+    return { committed, pending, skipped };
   }
 
   /**
