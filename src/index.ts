@@ -8,7 +8,11 @@
 export { PrivacyWallet } from './wallet';
 export { Note, NoteManager } from './note';
 export { TransactionBuilder } from './tx';
-export { PrivacyRpcClient } from './rpc';
+// Relayer client: withdraw/transfer are broadcast by the Atoshi privacy relayer
+// (atoshi-privacy-relayer) so msg.sender != note owner (audit Q8). The old
+// PrivacyRpcClient targeted a privacy-node that was never deployed and has been
+// removed — TransactionBuilder now talks to the relayer directly.
+export { RelayerClient } from './relayer';
 
 // EncryptedNote (Zcash/Aztec pattern: encrypt to recipient.viewingPubKey,
 // emit on-chain, receiver scans and decrypts with viewingKey).

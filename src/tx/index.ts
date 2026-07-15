@@ -21,7 +21,8 @@ import {
 import { PrivacyWallet } from '../wallet';
 import { Note } from '../note';
 import type { RecoveredNote } from '../scanner';
-import { PrivacyRpcClient } from '../rpc';
+import { RelayerClient } from '../relayer';
+import { rebuildMerkleTree, MerkleTreeData } from '../merkle';
 import { encryptNote } from '../crypto/ecies';
 import { toHex, fromHex, withTimeout } from '../utils';
 import {
@@ -38,6 +39,10 @@ import {
 // Upper bound on a single ZK proof generation. snarkjs cannot be truly
 // aborted, but this releases the caller if the prover stalls (audit Issue 12).
 const PROOF_TIMEOUT_MS = 120_000;
+
+// Must match Shield.sol's TREE_LEVELS (bumped to 32 in audit Issue 7) and the
+// levels compiled into the unshield / transfer circuits.
+const TREE_LEVELS = 32;
 
 // Shield contract ABI (minimal).
 // Signatures updated for audit 2026-06:
@@ -62,31 +67,34 @@ const SHIELD_ABI = [
  */
 export class TransactionBuilder {
   private wallet: PrivacyWallet;
-  private rpcClient: PrivacyRpcClient;
+  private relayerClient: RelayerClient;
   private config: SdkConfig;
-  // _provider / _F 是给后续 Unshield + Transfer 流程预留的字段,目前未启用
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  private _provider: ethers.Provider | null = null;
+  // L2 provider used to read chain state (rebuild the Merkle tree from events,
+  // check isSpent) on the withdraw/transfer paths.
+  private _provider: ethers.JsonRpcProvider | null = null;
   private signer: ethers.Signer | null = null;
+  // Signer-connected contract for deposit() (user-signed on-chain).
   private shieldContract: ethers.Contract | null = null;
+  // Provider-connected read-only contract for isSpent() on the relayer paths.
+  private shieldRead: ethers.Contract | null = null;
   private poseidon: any;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private _F: any;
   private initialized = false;
 
   constructor(wallet: PrivacyWallet, config: SdkConfig) {
-    if (!config.nodeUrl) {
-      // nodeUrl is optional on the shared SdkConfig (built-in network configs
-      // don't hardcode a privacy-node URL), but TransactionBuilder must have it
-      // to submit transfers/withdraws (audit Q7).
+    if (!config.relayerUrl) {
+      // withdraw/transfer are broadcast by the Atoshi privacy relayer so that
+      // msg.sender != note owner (audit Q8). The relayer URL is therefore
+      // required; the built-in network configs already set it.
       throw new InvalidParamsError(
-        'SdkConfig.nodeUrl is required for TransactionBuilder — set it, e.g. ' +
-          "{ ...TESTNET_CONFIG, nodeUrl: 'https://<privacy-node>' }"
+        'SdkConfig.relayerUrl is required for TransactionBuilder — use a built-in ' +
+          "config (TESTNET_CONFIG / MAINNET_CONFIG) or set it explicitly"
       );
     }
     this.wallet = wallet;
     this.config = config;
-    this.rpcClient = new PrivacyRpcClient(config.nodeUrl);
+    this.relayerClient = new RelayerClient(config.relayerUrl);
   }
 
   /**
@@ -99,16 +107,25 @@ export class TransactionBuilder {
     this.poseidon = await buildPoseidon();
     this._F = this.poseidon.F;
 
-    // Setup provider and signer
+    // Shield + the commitment tree live on L2 (audit Q5). Always read through a
+    // dedicated L2 JSON-RPC provider — the earlier code used l1RpcUrl, which is
+    // the wrong chain. batchMaxCount:1 mirrors the H5 / relayer wiring for the
+    // fork11 sequencer, which rejects batched requests.
+    this._provider = new ethers.JsonRpcProvider(
+      this.config.l2RpcUrl,
+      { chainId: this.config.l2ChainId, name: this.config.name },
+      { batchMaxCount: 1, staticNetwork: true }
+    );
+    this.shieldRead = new ethers.Contract(
+      this.config.shieldContract,
+      SHIELD_ABI,
+      this._provider
+    );
+
+    // A signer is only needed for deposit() (user-signed). withdraw/transfer are
+    // broadcast by the relayer, so they work without one.
     if (signer) {
       this.signer = signer;
-      this._provider = signer.provider ?? null;
-    } else {
-      this._provider = new ethers.JsonRpcProvider(this.config.l1RpcUrl);
-    }
-
-    // Setup Shield contract
-    if (this.signer) {
       this.shieldContract = new ethers.Contract(
         this.config.shieldContract,
         SHIELD_ABI,
@@ -207,36 +224,45 @@ export class TransactionBuilder {
       };
     }
 
-    // Notify privacy node
-    const nodeResult = await this.rpcClient.submitDeposit(
-      commitment,
-      params.tokenAddress,
-      amount,
-      receipt.hash
-    );
+    // deposit() emits Deposit(commitment, leafIndex, ...); read the leafIndex
+    // straight from the receipt (the on-chain tree assigned it). No privacy node
+    // is involved — deposit is a direct, user-signed L2 tx.
+    let leafIndex: number | undefined;
+    const depositIface = new ethers.Interface([
+      'event Deposit(uint256 indexed commitment, uint256 leafIndex, uint256 timestamp, address indexed token, uint256 amount, bytes encryptedNote)',
+    ]);
+    for (const log of receipt.logs) {
+      try {
+        const parsed = depositIface.parseLog({
+          topics: log.topics as string[],
+          data: log.data,
+        });
+        if (parsed && BigInt(parsed.args.commitment) === commitment) {
+          leafIndex = Number(parsed.args.leafIndex);
+          break;
+        }
+      } catch {
+        /* not the Deposit event */
+      }
+    }
 
-    // The deposit is already on-chain, so always track the note — otherwise a
-    // node that hasn't returned a leafIndex yet would drop it from the wallet
-    // entirely (audit Issue 11 scenario 1). It stays Pending until the leafIndex
-    // is known (from the node here, or later via a chain scan), then upgrades
-    // to Committed.
+    // The deposit is already on-chain, so always track the note (audit Issue 11
+    // scenario 1). Upgrade to Committed once we have the leafIndex from the event.
     this.wallet.addNote(note);
-    if (nodeResult.success && nodeResult.leafIndex !== undefined) {
-      note.setLeafIndex(nodeResult.leafIndex);
+    if (leafIndex !== undefined) {
+      note.setLeafIndex(leafIndex);
       this.wallet.markNoteCommitted(
         commitment,
-        nodeResult.leafIndex,
+        leafIndex,
         receipt.hash,
         receipt.blockNumber
       );
     }
 
     return {
-      success: nodeResult.success,
+      success: true,
       txHash: receipt.hash,
-      leafIndex: nodeResult.leafIndex,
-      newRoot: nodeResult.newRoot,
-      error: nodeResult.error,
+      leafIndex,
     };
   }
 
@@ -257,8 +283,10 @@ export class TransactionBuilder {
       throw new NoteNotCommittedError('Note not committed');
     }
 
-    // Get Merkle proof
-    const merkleProof = await this.rpcClient.getMerkleProof(note.leafIndex);
+    // Rebuild the Merkle tree from chain events and derive this note's path.
+    // Shield + the tree live on L2; there is no privacy-node merkle endpoint, so
+    // we reconstruct it the same way the H5 proof path does.
+    const merkleProof = await this.buildMerkleProof(note.leafIndex);
 
     // Reorg guard: the on-chain leaf at our cached index must still equal this
     // note's commitment. If a reorg shifted the position, the cached leafIndex
@@ -272,10 +300,10 @@ export class TransactionBuilder {
     // Compute nullifier
     const nullifier = await this.wallet.computeNullifier(note);
 
-    // Check nullifier not spent. If it is (e.g. already spent from another
-    // device), reconcile local state so this note stops being offered as
-    // spendable (audit Issue 11 scenario 3) before surfacing the error.
-    if (await this.rpcClient.isNullifierSpent(nullifier)) {
+    // Check nullifier not spent — read the Shield contract directly on L2. If it
+    // is (e.g. spent from another device), reconcile local state so this note
+    // stops being offered as spendable (audit Issue 11 scenario 3).
+    if (await this.shieldRead!.isSpent(nullifier)) {
       // commitment may be undefined on a note restored without it — guard so we
       // surface NoteAlreadySpentError, not an opaque TypeError (audit Q8).
       if (note.commitment !== undefined) {
@@ -284,14 +312,14 @@ export class TransactionBuilder {
       throw new NoteAlreadySpentError();
     }
 
-    // Generate ZK proof. The unshield circuit now binds `relayer` into
-    // the public-input vector (audit Issue 3 / contract Issue 4), so
-    // callers must specify which relayer will broadcast the tx. When
-    // unset, default to address(0) and force fee=0 (the contract
-    // requires _relayer != 0 whenever _fee > 0).
-    const relayer = params.relayer ?? '0x0000000000000000000000000000000000000000';
+    // The unshield circuit binds `relayer` into the public-input vector (audit
+    // Issue 3 / contract Issue 4). Default to the configured relayer (which will
+    // broadcast the tx); callers may override. address(0) => self-broadcast,
+    // which requires fee == 0 (the contract enforces it).
+    const relayer =
+      params.relayer ?? this.config.relayerAddress ?? ethers.ZeroAddress;
     const fee = params.fee ? BigInt(params.fee.toString()) : 0n;
-    if (fee > 0n && relayer === '0x0000000000000000000000000000000000000000') {
+    if (fee > 0n && relayer === ethers.ZeroAddress) {
       throw new InvalidParamsError('A non-zero relayer address is required when fee > 0');
     }
     const proof = await this.generateWithdrawProof(
@@ -302,21 +330,23 @@ export class TransactionBuilder {
       fee
     );
 
-    // Submit to privacy node
-    const result = await this.rpcClient.submitWithdraw(
+    // Submit to the relayer: it validates publicSignals.relayer == its own
+    // address and broadcasts Shield.withdraw with itself as msg.sender (audit
+    // Q8); the contract also enforces msg.sender == _relayer.
+    const result = await this.relayerClient.submitWithdraw({
       proof,
-      merkleProof.root,
-      nullifier,
-      params.recipient,
-      note.tokenId === 0n ? ethers.ZeroAddress : toHex(note.tokenId, 40),
-      note.amount,
-      params.fee ? BigInt(params.fee.toString()) : 0n
-    );
+      root: merkleProof.root,
+      nullifierHash: nullifier,
+      recipient: params.recipient,
+      relayer,
+      amount: note.amount,
+      fee,
+      token: note.tokenId === 0n ? ethers.ZeroAddress : toHex(note.tokenId, 40),
+    });
 
-    // Once the node accepts the proof the nullifier is spent on-chain
-    // regardless of whether a txHash made it back (relayer async / dropped
-    // response), so mark spent on success — not only when txHash is present
-    // (audit Issue 11 scenario 2).
+    // Once the relayer broadcasts, the nullifier is spent on-chain, so mark the
+    // note spent on success even if no txHash came back (audit Issue 11
+    // scenario 2).
     if (result.success && note.commitment !== undefined) {
       this.wallet.markNoteSpent(note.commitment, result.txHash);
     }
@@ -341,8 +371,9 @@ export class TransactionBuilder {
       throw new NoteNotCommittedError('Note not committed');
     }
 
-    // Get Merkle proof
-    const merkleProof = await this.rpcClient.getMerkleProof(inNote.leafIndex);
+    // Rebuild the Merkle tree from chain and derive the input note's path
+    // (same reconstruction as the H5 proof path — no privacy-node endpoint).
+    const merkleProof = await this.buildMerkleProof(inNote.leafIndex);
 
     // Reorg guard (audit Issue 14): the leaf at our cached index must still be
     // this note's commitment, else the leafIndex is stale (reorg) and would
@@ -355,10 +386,10 @@ export class TransactionBuilder {
     // Compute nullifier
     const nullifier = await this.wallet.computeNullifier(inNote);
 
-    // Check nullifier not spent. Reconcile local state before throwing so a
-    // note spent elsewhere stops being offered as spendable (audit Issue 11
-    // scenario 3).
-    if (await this.rpcClient.isNullifierSpent(nullifier)) {
+    // Check nullifier not spent — read the Shield contract directly on L2.
+    // Reconcile local state before throwing so a note spent elsewhere stops
+    // being offered as spendable (audit Issue 11 scenario 3).
+    if (await this.shieldRead!.isSpent(nullifier)) {
       // Guard commitment (may be undefined on a restored note) so we throw
       // NoteAlreadySpentError rather than an opaque TypeError (audit Q8).
       if (inNote.commitment !== undefined) {
@@ -391,31 +422,29 @@ export class TransactionBuilder {
       outNote.toData()
     );
 
-    // Submit to privacy node
-    const result = await this.rpcClient.submitTransfer(
+    // Submit to the relayer, which broadcasts Shield.transfer with itself as
+    // msg.sender so the note owner's address never appears on-chain (audit Q8).
+    const result = await this.relayerClient.submitTransfer({
       proof,
-      merkleProof.root,
-      nullifier,
-      outCommitment,
-      encryptedNote
-    );
+      root: merkleProof.root,
+      nullifierHash: nullifier,
+      newCommitment: outCommitment,
+      encryptedNote,
+    });
 
-    // The input nullifier is spent on-chain as soon as the node accepts the
-    // proof, so mark the input note spent on success even if no txHash came
-    // back (audit Issue 11 scenario 2).
+    // The input nullifier is spent on-chain as soon as the relayer broadcasts,
+    // so mark the input note spent on success even if no txHash came back
+    // (audit Issue 11 scenario 2).
     if (result.success) {
       if (inNote.commitment !== undefined) {
         this.wallet.markNoteSpent(inNote.commitment, result.txHash);
       }
 
-      // If transferring to self, track the new output note. Upgrade it to
-      // Committed only once we actually have a leafIndex.
+      // If transferring to self, track the new output note. The Transfer event
+      // carries no leafIndex (audit Q6), so it stays Pending until a ChainScanner
+      // full scan resolves its position; importRecoveredNotes then commits it.
       if (params.recipientPublicKey === this.wallet.getPublicKey()) {
         this.wallet.addNote(outNote);
-        if (result.leafIndex !== undefined) {
-          outNote.setLeafIndex(result.leafIndex);
-          this.wallet.markNoteCommitted(outCommitment, result.leafIndex, result.txHash ?? '');
-        }
       }
     }
 
@@ -567,22 +596,56 @@ export class TransactionBuilder {
   async reconcileNotes(): Promise<bigint[]> {
     this.ensureInitialized();
     const invalidated: bigint[] = [];
+
+    // Rebuild the tree once from chain and check every committed note's leaf
+    // against its cached index. A transient RPC failure aborts the whole pass
+    // (notes left as-is) rather than wrongly invalidating good notes.
+    let tree: MerkleTreeData;
+    try {
+      tree = await this.rebuildTree();
+    } catch {
+      return invalidated; // transient RPC error — retry on a later reconcile
+    }
+
     for (const record of this.wallet.getAllNotes()) {
       if (record.status !== NoteStatus.Committed) continue;
       const { commitment, leafIndex } = record.note;
       if (commitment === undefined || leafIndex === undefined) continue;
-      let proof: MerkleProof;
-      try {
-        proof = await this.rpcClient.getMerkleProof(leafIndex);
-      } catch {
-        continue; // transient RPC error — retry on a later reconcile
-      }
-      if (proof.leaf !== commitment) {
+      const leaf = leafIndex < tree.leaves.length ? tree.leaves[leafIndex] : undefined;
+      if (leaf !== commitment) {
         this.wallet.invalidateCommittedNote(commitment);
         invalidated.push(commitment);
       }
     }
     return invalidated;
+  }
+
+  /** Rebuild the on-chain commitment tree from Shield events (L2). */
+  private async rebuildTree(): Promise<MerkleTreeData> {
+    return rebuildMerkleTree(this._provider!, this.config.shieldContract, {
+      levels: TREE_LEVELS,
+    });
+  }
+
+  /**
+   * Rebuild the tree and assemble the MerkleProof for `leafIndex`. Throws
+   * StaleLeafIndexError if the cached index is beyond the current on-chain tree
+   * (a deep reorg / rollback); callers additionally compare merkleProof.leaf to
+   * the note's commitment to catch a shifted leaf (audit Issue 14).
+   */
+  private async buildMerkleProof(leafIndex: number): Promise<MerkleProof> {
+    const tree = await this.rebuildTree();
+    if (leafIndex < 0 || leafIndex >= tree.leaves.length) {
+      throw new StaleLeafIndexError();
+    }
+    const path = tree.pathFor(leafIndex);
+    return {
+      leaf: tree.leaves[leafIndex],
+      leafIndex,
+      pathElements: path.pathElements.map((e) => BigInt(e)),
+      pathIndices: path.pathIndices,
+      root: path.root,
+    };
   }
 
   /**

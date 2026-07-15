@@ -64,74 +64,57 @@ export async function rebuildMerkleTree(
     chunkSize?: number;
   } = {}
 ): Promise<MerkleTreeData> {
-  const levels = options.levels ?? 20;
+  // Must match Shield.sol's TREE_LEVELS (bumped to 32 in audit Issue 7).
+  const levels = options.levels ?? 32;
   const fromBlock = options.fromBlock ?? 0;
   const chunk = options.chunkSize ?? 9000;
   const latest = await provider.getBlockNumber();
 
-  // 收集 (leafIndex, commitment) 对
-  type Entry = { leafIndex: number; commitment: bigint; blockNumber: number };
+  // The tree inserts a leaf for EVERY Deposit AND EVERY Transfer, one each, in
+  // strict on-chain execution order (Shield.sol / MerkleTree.insert). Transfer
+  // events do not emit a leafIndex, so we cannot rely on the emitted index for
+  // ordering — instead we collect both event types with their (blockNumber,
+  // logIndex) and reproduce the insertion order by sorting on those. This is the
+  // same reconstruction the H5 proof path uses; the earlier version silently
+  // dropped every Transfer leaf, producing a wrong root.
+  type Entry = { blockNumber: number; logIndex: number; commitment: bigint };
   const entries: Entry[] = [];
 
   for (let from = fromBlock; from <= latest; from += chunk) {
     const to = Math.min(from + chunk - 1, latest);
-
-    // Deposit 事件: 直接带 leafIndex
-    const depositLogs = await provider.getLogs({
+    const logs = await provider.getLogs({
       address: shieldAddress,
-      topics: [DEPOSIT_TOPIC],
       fromBlock: from,
       toBlock: to,
+      // no topic filter — pull Deposit + Transfer in one pass
     });
-    for (const log of depositLogs) {
+    for (const log of logs) {
       try {
-        const parsed = DEPOSIT_IFACE.parseLog({ topics: log.topics as string[], data: log.data });
-        if (!parsed) continue;
-        entries.push({
-          leafIndex: Number(parsed.args.leafIndex),
-          commitment: BigInt(parsed.args.commitment),
-          blockNumber: log.blockNumber,
-        });
-      } catch { /* skip */ }
-    }
-
-    // Transfer 事件: 没 leafIndex, 用区块号 + log 顺序作为时间戳排序
-    // 后续需要根据 nextIndex 进展给它分配真实 leafIndex
-    const transferLogs = await provider.getLogs({
-      address: shieldAddress,
-      topics: [TRANSFER_TOPIC],
-      fromBlock: from,
-      toBlock: to,
-    });
-    for (const log of transferLogs) {
-      try {
-        const parsed = TRANSFER_IFACE.parseLog({ topics: log.topics as string[], data: log.data });
-        if (!parsed) continue;
-        entries.push({
-          leafIndex: -1,                              // 占位, 下面会按时间顺序填
-          commitment: BigInt(parsed.args.newCommitment),
-          blockNumber: log.blockNumber,
-        });
-      } catch { /* skip */ }
+        if (log.topics[0] === DEPOSIT_TOPIC) {
+          const parsed = DEPOSIT_IFACE.parseLog({ topics: log.topics as string[], data: log.data });
+          if (!parsed) continue;
+          entries.push({
+            blockNumber: log.blockNumber,
+            logIndex: log.index,
+            commitment: BigInt(parsed.args.commitment),
+          });
+        } else if (log.topics[0] === TRANSFER_TOPIC) {
+          const parsed = TRANSFER_IFACE.parseLog({ topics: log.topics as string[], data: log.data });
+          if (!parsed) continue;
+          entries.push({
+            blockNumber: log.blockNumber,
+            logIndex: log.index,
+            commitment: BigInt(parsed.args.newCommitment),
+          });
+        }
+      } catch { /* not a leaf-inserting event we recognize */ }
     }
   }
 
-  // 按 (blockNumber, leafIndex 优先) 排序得到插入顺序
-  entries.sort((a, b) => {
-    if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
-    // 同一块内, Deposit (leafIndex >= 0) 优先, Transfer 后到
-    return a.leafIndex - b.leafIndex;
-  });
-
-  // 重新填 Transfer 的 leafIndex(假设按插入顺序递增)
-  // 用一个 counter: 见到 Deposit 取它带的 leafIndex; Transfer 取 counter
-  // 注意: Deposit 已经有真实 leafIndex, 我们只对 Transfer 重新编号
-  // 实际更稳妥的做法是依赖合约 nextIndex,但 Atoshi Transfer 事件还没 leafIndex 字段.
-  // 此处用简化算法:先收 Deposit 的 leafIndex 上界,然后给所有 Transfer 顺序填.
-  const knownDeposits = entries.filter(e => e.leafIndex >= 0).sort((a, b) => a.leafIndex - b.leafIndex);
-  // 按 leaf 顺序排好的全集 (Deposit 用真 index, Transfer 在 Deposit 之间按 blockNumber 插入)
-  // 简化: 暂时假设池子里只有 Deposit (V1 多数场景); Transfer 真实编号待后端 indexer 补
-  const leaves: bigint[] = knownDeposits.map(e => e.commitment);
+  // Sort by (blockNumber, logIndex) = the contract's leaf-insertion order, so
+  // leaves[i] is the commitment at leafIndex i.
+  entries.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex));
+  const leaves: bigint[] = entries.map(e => e.commitment);
 
   // 构建 tree
   const zeros = await buildZeros(levels);

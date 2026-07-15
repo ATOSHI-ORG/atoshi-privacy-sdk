@@ -368,7 +368,7 @@ async function restoreNotesFromChain(signer) {
   const wallet = new PrivacyWallet();
   await wallet.init();
   await wallet.initFromEIP712Signature(signature);   // 派生出与上面一致的密钥
-  const tb = new TransactionBuilder(wallet, { ...TESTNET_CONFIG, nodeUrl: PRIVACY_NODE_URL });
+  const tb = new TransactionBuilder(wallet, TESTNET_CONFIG); // relayerUrl 已内置
   await tb.init(signer);
 
   // 3. 扫链:解密属于自己的 Deposit / Transfer 事件
@@ -497,9 +497,12 @@ import { ChainScanner, TransactionBuilder } from '@atoshi/privacy-sdk';
 export const L2_RPC_URL = 'https://l2-rpc1-testnet.atoshi.org';
 export const L2_CHAIN_ID = 67890;
 
-// Privacy node / relayer —— TransactionBuilder 的 nodeUrl (提交 transfer/withdraw、
-// 恢复时的 importRecoveredNotes 都经它)。以最新部署清单为准。
-export const PRIVACY_NODE_URL = 'https://<privacy-node>';
+// Privacy relayer —— TransactionBuilder 提交 transfer/withdraw 时由它代发上链
+// (msg.sender = relayer,非 note owner;audit Q8)。已内置于 TESTNET_CONFIG /
+// MAINNET_CONFIG 的 relayerUrl / relayerAddress,一般无需手动设置。deposit 由用户
+// 自己签名直连合约,不经 relayer。以最新部署清单为准。
+export const RELAYER_URL = 'https://<relayer>';        // = config.relayerUrl
+export const RELAYER_ADDRESS = '0x<relayer-eoa>';      // = config.relayerAddress
 
 // 合约地址 (当前测试网部署; ceremony 重部署后会变)
 export const SHIELD_ADDR = '0xB515a4a438c168cf34F1ABEEa40a835a39af5625';

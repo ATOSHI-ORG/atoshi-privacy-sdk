@@ -1,5 +1,5 @@
 // Integration-ish tests for TransactionBuilder.transfer's encryptedNote key
-// selection (audit Issue 6 follow-up). Uses a fake RPC client so no chain is
+// selection (audit Issue 6 follow-up). Chain I/O is stubbed so no network is
 // needed. The key property under test: a transfer to an EXTERNAL recipient
 // without their viewing pubkey must FAIL LOUD rather than silently produce a
 // note the recipient can never recover.
@@ -23,22 +23,6 @@ async function makeCommittedWallet(): Promise<PrivacyWallet> {
   return w;
 }
 
-// Fake privacy-node RPC: leaf matches so the reorg guard passes, nullifier is
-// unspent, and submitTransfer "succeeds".
-function fakeRpc(leaf: bigint) {
-  return {
-    getMerkleProof: async (leafIndex: number) => ({
-      leaf,
-      leafIndex,
-      pathElements: [],
-      pathIndices: [],
-      root: 0n,
-    }),
-    isNullifierSpent: async () => false,
-    submitTransfer: async () => ({ success: true, txHash: '0xtx', leafIndex: 1 }),
-  };
-}
-
 describe('transfer encryptedNote key selection (audit Issue 6)', () => {
   let builder: TransactionBuilder;
   let wallet: PrivacyWallet;
@@ -47,13 +31,23 @@ describe('transfer encryptedNote key selection (audit Issue 6)', () => {
   beforeEach(async () => {
     wallet = await makeCommittedWallet();
     commitment = wallet.getAllNotes()[0].note.commitment!;
-    builder = new TransactionBuilder(wallet, {
-      ...TESTNET_CONFIG,
-      nodeUrl: 'http://localhost:0',
+    builder = new TransactionBuilder(wallet, { ...TESTNET_CONFIG });
+    await builder.init(); // no signer needed for the relayer-submitted transfer path
+
+    // Stub chain I/O so the test needs no network: the Merkle proof resolves
+    // with a matching leaf (reorg guard passes), the nullifier is unspent, and
+    // the relayer "accepts". These replace the real getLogs / contract reads.
+    (builder as any).buildMerkleProof = async (leafIndex: number) => ({
+      leaf: commitment,
+      leafIndex,
+      pathElements: [],
+      pathIndices: [],
+      root: 0n,
     });
-    await builder.init(); // no signer needed for the node-submitted transfer path
-    // Inject the fake node so no real network is used.
-    (builder as unknown as { rpcClient: unknown }).rpcClient = fakeRpc(commitment);
+    (builder as any).shieldRead = { isSpent: async () => false };
+    (builder as any).relayerClient = {
+      submitTransfer: async () => ({ success: true, txHash: '0xtx' }),
+    };
   });
 
   it('throws when transferring to another recipient without a viewing pubkey', async () => {
