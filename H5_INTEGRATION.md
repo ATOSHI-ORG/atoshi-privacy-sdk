@@ -340,41 +340,71 @@ async function transfer(
 
 ## 3. 跨设备 / 卸载后恢复
 
+恢复分两步:用同一 EOA 签名重建密钥,再扫链把 note 并回钱包。**恢复得到的 note 由
+`PrivacyWallet` 统一维护——不要自己另存一份 note 表**(那正是旧版本 `saveNote` 写法的问题)。
+
 ```typescript
-import { ChainScanner } from '@atoshi/privacy-sdk';
+import {
+  PrivacyWallet,
+  TransactionBuilder,
+  ChainScanner,
+  SEED_DERIVATION_TYPED_DATA,
+  seedFromEIP712Signature,
+  deriveKeysFromSeed,
+  TESTNET_CONFIG,
+} from '@atoshi/privacy-sdk';
 
-async function restoreNotesFromChain(keys: DerivedKeys) {
-  const scanner = new ChainScanner({
-    rpcUrl: 'https://l2-rpc1-testnet.atoshi.org',
-    shieldAddress: '0xB515a4a438c168cf34F1ABEEa40a835a39af5625',
-    fromBlock: 0,                  // 首次启动从 0 开始扫
-    chunkSize: 9000,               // 单批最多扫 9000 块 (RPC 限制)
-  });
-
-  // 扫所有 Deposit + Transfer 事件, 挨个用 viewingKey 试解密
-  // 解密成功的就是 "我的 Note", 自动入库
-  const myNotes = await scanner.scanForViewer(
-    keys.viewingKey,
-    keys.spendingKey,
+async function restoreNotesFromChain(signer) {
+  // 1. 同一 EOA 重新签名 → 同一 seed → 同一套密钥
+  const signature = await signer.signTypedData(
+    SEED_DERIVATION_TYPED_DATA.domain,
+    SEED_DERIVATION_TYPED_DATA.types,
+    SEED_DERIVATION_TYPED_DATA.message,
   );
+  const seed = await seedFromEIP712Signature(signature);
+  const keys = await deriveKeysFromSeed(seed);   // 原始 viewing/spending key,供 scanner 解密
 
-  // myNotes: RecoveredNote[] 包含 spend 所需全字段
-  for (const note of myNotes) {
-    await saveNote(note);
-  }
+  // 2. 重建钱包(importRecoveredNotes 需要一个 PrivacyWallet)
+  const wallet = new PrivacyWallet();
+  await wallet.init();
+  await wallet.initFromEIP712Signature(signature);   // 派生出与上面一致的密钥
+  const tb = new TransactionBuilder(wallet, { ...TESTNET_CONFIG, nodeUrl: PRIVACY_NODE_URL });
+  await tb.init(signer);
 
-  // 也要从 nullifier mapping 排除掉已经花掉的 Note
-  // (可以查 Shield.isSpent(nullifier))
+  // 3. 扫链:解密属于自己的 Deposit / Transfer 事件
+  const scanner = new ChainScanner({
+    rpcUrl: L2_RPC_URL,
+    shieldAddress: SHIELD_ADDR,
+    fromBlock: 0,        // 必须从 0 全量扫:transfer note 的 leafIndex 依赖从 0 起的插入计数
+    chunkSize: 9000,     // 单批最多扫 9000 块 (RPC 限制)
+  });
+  const recovered = await scanner.scanForViewer(keys.viewingKey, keys.spendingKey);
+
+  // 4. 把扫描结果并入钱包的 note 状态(audit Issue 11 / Q6)
+  const { committed, pending, skipped } = tb.importRecoveredNotes(recovered);
+  //  committed: 有 leafIndex、可直接 spend(deposit,以及全量扫描下的 transfer)
+  //  pending:   leafIndex 尚未解出的 transfer 输出(只在增量扫描出现),暂不可 spend,
+  //             重新做一次 fromBlock=0 的全量扫描即可解出
+  //  skipped:   本地已是 Spent 的 note,不会被复活
+
+  // 之后一律用钱包的可花集 / 余额,不要自己再维护一份 note 表
+  return { balance: wallet.getBalance(0n), spendable: wallet.getUnspentNotes() };
 }
 ```
 
-**用户体验**：
+**关于 leafIndex(重要)**:链上 `Transfer` 事件**不 emit leafIndex**。scanner 通过按链上
+顺序对所有 deposit+transfer 的插入计数来推算 transfer note 的 leafIndex,因此**恢复时必须
+`fromBlock: 0` 全量扫描**;若从中途起扫,首个 Deposit 锚点之前的 transfer 输出会定位不到
+(leafIndex = -1),`importRecoveredNotes` 会把它们归入 `pending`(不可 spend),需再跑一次
+全量扫描解出。
+
+**用户体验**:
 ```
-用户换手机/换电脑/卸载重装 → 
+用户换手机/换电脑/卸载重装 →
     1. 装回钱包, 导回 EOA
     2. 打开隐私 H5, 签一次 EIP-712 (跟第一次一模一样)
-    3. 钱包后台扫链, 几秒到几十秒完成
-    4. 历史 Note 全部回来
+    3. 后台全量扫链 + importRecoveredNotes, 几秒到几十秒完成
+    4. 历史 Note 回到钱包(可花的进 Committed, 未定位的进 Pending)
 ```
 
 **完全不需要**用户手动备份。
@@ -449,10 +479,13 @@ import {
   decryptNote,                     // 用 viewingKey 解密
 } from '@atoshi/privacy-sdk';
 
-// === 链上扫描 ===
-import { ChainScanner } from '@atoshi/privacy-sdk';
+// === 链上扫描 + 恢复 ===
+import { ChainScanner, TransactionBuilder } from '@atoshi/privacy-sdk';
 // new ChainScanner({rpcUrl, shieldAddress, fromBlock, chunkSize})
-// .scanForViewer(viewingKey, spendingKey) → RecoveredNote[]
+//   .scanForViewer(viewingKey, spendingKey) → RecoveredNote[]
+//     (transfer note 的 leafIndex 由扫描器按插入次序推算,需 fromBlock=0 全量扫)
+// tb.importRecoveredNotes(RecoveredNote[]) → { committed, pending, skipped }
+//   把扫描结果并入钱包的 note 状态,恢复后用 wallet.getUnspentNotes()/getBalance() (见 §3)
 ```
 
 ---
@@ -463,6 +496,10 @@ import { ChainScanner } from '@atoshi/privacy-sdk';
 // L2 网络 (当前测试网; 重新部署后更新)
 export const L2_RPC_URL = 'https://l2-rpc1-testnet.atoshi.org';
 export const L2_CHAIN_ID = 67890;
+
+// Privacy node / relayer —— TransactionBuilder 的 nodeUrl (提交 transfer/withdraw、
+// 恢复时的 importRecoveredNotes 都经它)。以最新部署清单为准。
+export const PRIVACY_NODE_URL = 'https://<privacy-node>';
 
 // 合约地址 (当前测试网部署; ceremony 重部署后会变)
 export const SHIELD_ADDR = '0xB515a4a438c168cf34F1ABEEa40a835a39af5625';
@@ -505,6 +542,11 @@ Unshield → 双花保护，前端照它的步骤写即可。
   - 尽量把 SDK 放在独立上下文（iframe / web worker 沙箱）运行，避免业务页面
     脚本直接读到密钥；
   - 密钥仅在内存，刷新即失效，靠同一 EOA 签名 / 助记词重新派生。
+  - **内存驻留（审计 Q4）**：签名登录后派生出的 spending key 会以明文形式驻留在
+    SDK 实例内部（`this.keypair`）整个会话期，直至实例销毁。`stripInternal` 只在
+    **类型层**移除了敏感接口（`getKeypair` / `getDerivedKeys` 等），运行时这些方法
+    依旧可达，并非内存隔离。真正的内存 / 上下文隔离（iframe / worker 沙箱）属集成层
+    职责，已列为后续升级项。
 
 - **relayer 自营、无手续费、靠限流防刷**：当前隐私转账 `transfer()`
   不收 fee，relayer（privacy node）由项目方自营并补贴 gas。含义：
