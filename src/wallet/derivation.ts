@@ -39,6 +39,8 @@ import {
   computeHmac,
   getBytes,
   hexlify,
+  keccak256,
+  toUtf8Bytes,
   TypedDataEncoder,
 } from "ethers";
 
@@ -54,12 +56,28 @@ const FIELD_SIZE = BigInt(
 export const DOMAIN_NAME = "Atoshi Privacy";
 export const DOMAIN_VERSION = "1";
 
+// Protocol-level domain salt (audit Q2 follow-up). The EIP-712 domain
+// deliberately omits chainId / verifyingContract so the derived seed stays
+// portable across L1 / L2 (same note-decrypt key on every chain). That left the
+// domain with no context distinguishing it from any other app using
+// name="Atoshi Privacy", version="1", widening the signature-reuse surface.
+// We bind a protocol-level constant into the standard EIP-712 `salt` field
+// instead: it disambiguates the signature as belonging to the Atoshi privacy
+// protocol without tying it to a specific chain or contract.
+//
+// FROZEN CONSTANT: keccak256(utf8("atoshi-privacy-v1")) =
+//   0x63d69f19a93e66068040b496d15c5ef29545c9e2d3a8e9d6f2d20e8e1bba6d18
+// Changing this string (like the labels/version fields, see below) silently
+// breaks recovery for every existing user, so it must never change.
+export const SEED_DOMAIN_SALT = keccak256(toUtf8Bytes("atoshi-privacy-v1"));
+
 // Empty chainId means the signature is portable across L1 / L2 — the
 // note-decrypt key is the SAME no matter which chain the user is on.
 export const SEED_DERIVATION_TYPED_DATA = {
   domain: {
     name: DOMAIN_NAME,
     version: DOMAIN_VERSION,
+    salt: SEED_DOMAIN_SALT,
   },
   types: {
     AtoshiPrivacyKeyDerivation: [
