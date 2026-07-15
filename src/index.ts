@@ -29,7 +29,18 @@ export {
   SEED_DERIVATION_TYPED_DATA,
   getSeedDerivationDigest,
   seedFromEIP712Signature,
+  // Pure derivation / backup helpers. These are stateless functions (they hold
+  // no key material), so exposing them does not reopen audit Issue 8 (which hid
+  // stateful key-material getters). H5 integrators need them to derive the key
+  // set and to align with the SDK's canonical derivation instead of hand-rolling
+  // seed→key math. Referenced by H5_INTEGRATION.md §2/§6.
+  seedFromMnemonic,
+  generateMnemonic,
+  deriveKeysFromSeed,
+  encryptBackup,
+  decryptBackup,
 } from './wallet/derivation';
+export type { DerivedKeys, EncryptedBackup } from './wallet/derivation';
 
 // Chain scanner: 增量扫 Shield 事件,自动恢复属于本人的 Note (跨设备恢复用).
 export { ChainScanner } from './scanner';
