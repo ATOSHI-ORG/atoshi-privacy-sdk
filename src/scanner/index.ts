@@ -9,7 +9,9 @@
  *     fromBlock: 0,                           // 或上次扫到的位置
  *   });
  *   const notes = await scanner.scanForViewer(viewingKey, spendingKey);
- *   // 每个 note 是一个 RecoveredNote, 包含完整字段可直接 spend
+ *   // 每个 note 是一个 RecoveredNote。deposit note 与(全量扫描 fromBlock=0 时)
+ *   // transfer note 都带有可用于 spend 的 leafIndex;transfer 的 leafIndex 由扫描器
+ *   // 按插入次序推算(合约不 emit,见 scanForViewer 内注释 / audit Issue 11)。
  *
  * 性能:
  *   - 单笔 try-decrypt < 1ms
@@ -39,13 +41,17 @@ export interface ScannerConfig {
 /**
  * 从链上扫到 + 解密成功的 Note. 包含 spend 所需全部字段.
  *
- * NOTE: commitment 和 leafIndex 来自链上事件 (公开数据).
+ * NOTE: commitment 来自链上事件 (公开数据).
+ *       leafIndex: deposit 直接来自事件;transfer 由扫描器按插入次序推算
+ *       (合约不 emit)。全量扫描 (fromBlock=0) 下均为有效值;增量扫描中,
+ *       首个 Deposit 锚点之前的 transfer 输出会是 -1 (尚不可 spend)。
  *       amount/blinding 来自 encryptedNote 的解密 plaintext (私密数据).
  *       owner 在本地用 spendingKey 重算 = Poseidon(spendingKey).
  */
 export interface RecoveredNote {
   /** 来自事件 (公开) */
   commitment: bigint;
+  /** deposit: 来自事件; transfer: 按插入次序推算 (-1 = 未锚定, 尚不可 spend) */
   leafIndex: number;
   blockNumber: number;
   txHash: string;
@@ -118,6 +124,24 @@ export class ChainScanner {
     // the encryptedNote was forged — drop it silently.
     const ownerPubkey = await deriveOwnerPubkey(spendingKey);
 
+    // Derive the leafIndex of every note — including Transfer outputs, which
+    // the contract does NOT emit a leafIndex for (audit Issue 11 / Q6).
+    //
+    // The Shield tree only ever inserts leaves in two places — deposit() and
+    // transfer() — each inserts exactly one leaf, sequentially (+1), in on-chain
+    // execution order (Shield.sol / MerkleTree.insert). Deposit events DO carry
+    // their leafIndex. So by walking all Deposit + Transfer events in chain
+    // order and counting insertions, we can assign the correct leafIndex to each
+    // Transfer output too, anchoring/cross-checking against the leafIndex the
+    // Deposit events emit.
+    //
+    // nextLeafIndex starts at 0 for a full scan (fromBlock === 0). For an
+    // incremental scan starting mid-stream we don't know the tree size up front,
+    // so it starts null (unanchored) and is anchored by the first Deposit we
+    // see; Transfer outputs seen before that anchor get leafIndex -1 (caller
+    // treats them as not-yet-spendable). Full recovery should scan from block 0.
+    let nextLeafIndex: number | null = this.fromBlock === 0 ? 0 : null;
+
     for (let from = this.fromBlock; from <= end; from += this.chunkSize) {
       const to = Math.min(from + this.chunkSize - 1, end);
       const logs = await this.provider.getLogs({
@@ -126,6 +150,10 @@ export class ChainScanner {
         toBlock: to,
         // 不过滤 topic[0], 一次拉 Deposit + Transfer 两种事件
       });
+
+      // Leaf ordering must follow on-chain execution order. getLogs is normally
+      // already ascending, but sort explicitly so the counter is never wrong.
+      logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
       for (const log of logs) {
         let parsed;
@@ -143,15 +171,24 @@ export class ChainScanner {
 
         if (parsed.name === 'Deposit') {
           commitment = BigInt(parsed.args.commitment);
+          // Deposit emits its own leafIndex — authoritative. Use it and
+          // (re-)anchor the running counter so subsequent Transfer outputs are
+          // numbered correctly even on an incremental scan.
           leafIndex = Number(parsed.args.leafIndex);
+          nextLeafIndex = leafIndex + 1;
           source = 'deposit';
           encryptedNoteHex = parsed.args.encryptedNote as string;
         } else if (parsed.name === 'Transfer') {
           commitment = BigInt(parsed.args.newCommitment);
-          // Transfer 没直接 emit leafIndex,需要从 commitmentTree 的插入次序推算
-          // (或扫描器单独跟踪 nextIndex 计数器). 这里暂用 -1 占位,
-          // 调用方在后处理时根据 commitment 在 tree 中的位置赋值.
-          leafIndex = -1;
+          // Transfer does NOT emit a leafIndex. Derive it from the running
+          // insertion counter (audit Issue 11 / Q6). -1 only if we haven't
+          // anchored yet (incremental scan started before the first Deposit).
+          if (nextLeafIndex === null) {
+            leafIndex = -1;
+          } else {
+            leafIndex = nextLeafIndex;
+            nextLeafIndex++;
+          }
           source = 'transfer';
           encryptedNoteHex = parsed.args.encryptedNote as string;
         } else {
