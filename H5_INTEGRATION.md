@@ -380,9 +380,11 @@ async function restoreNotesFromChain(signer) {
   });
   const recovered = await scanner.scanForViewer(keys.viewingKey, keys.spendingKey);
 
-  // 4. 把扫描结果并入钱包的 note 状态(audit Issue 11 / Q6)
-  const { committed, pending, skipped } = tb.importRecoveredNotes(recovered);
-  //  committed: 有 leafIndex、可直接 spend(deposit,以及全量扫描下的 transfer)
+  // 4. 把扫描结果并入钱包的 note 状态(audit Issue 11 / Q6)。异步:会逐个用
+  //    Shield.isSpent 核对链上花费状态。
+  const { committed, pending, spent, skipped } = await tb.importRecoveredNotes(recovered);
+  //  committed: 有 leafIndex 且链上未花费 → 可直接 spend
+  //  spent:     有 leafIndex 但链上已花费 → 标 Spent(新钱包恢复时据此剔除,不计入余额)
   //  pending:   leafIndex 尚未解出的 transfer 输出(只在增量扫描出现),暂不可 spend,
   //             重新做一次 fromBlock=0 的全量扫描即可解出
   //  skipped:   本地已是 Spent 的 note,不会被复活

@@ -686,12 +686,17 @@ export class TransactionBuilder {
    * cross-device recovery could not rebuild the user's spendable note set.
    *
    * For each recovered note:
-   *  - already tracked & Spent  → skipped (never resurrect a spent note);
-   *  - leafIndex >= 0           → added and marked Committed (spendable);
-   *  - leafIndex < 0            → added as Pending (a transfer output whose
-   *                               leafIndex the scanner could not yet derive on
-   *                               an incremental scan — not spendable until a
-   *                               full scan resolves it).
+   *  - already tracked & Spent locally     → skipped (never resurrect);
+   *  - leafIndex >= 0 & nullifier spent    → marked Spent (checked against the
+   *                                          Shield contract, so a fresh wallet
+   *                                          doesn't list already-spent notes as
+   *                                          spendable);
+   *  - leafIndex >= 0 & nullifier unspent  → marked Committed (spendable);
+   *  - leafIndex < 0                       → added as Pending (a transfer output
+   *                                          whose leafIndex the scanner could
+   *                                          not yet derive on an incremental
+   *                                          scan — not spendable until a full
+   *                                          scan resolves it).
    *
    * The scanner has already cryptographically validated every RecoveredNote
    * against this wallet's owner pubkey (re-hashed commitment match), so all
@@ -701,11 +706,12 @@ export class TransactionBuilder {
    * @returns commitments grouped by outcome, so the caller can surface
    *          not-yet-spendable notes and trigger a full re-scan if needed.
    */
-  importRecoveredNotes(notes: RecoveredNote[]): {
+  async importRecoveredNotes(notes: RecoveredNote[]): Promise<{
     committed: bigint[];
     pending: bigint[];
+    spent: bigint[];
     skipped: bigint[];
-  } {
+  }> {
     this.ensureInitialized();
     const owner = this.wallet.getPublicKey();
     if (owner === null) {
@@ -724,6 +730,7 @@ export class TransactionBuilder {
 
     const committed: bigint[] = [];
     const pending: bigint[] = [];
+    const spent: bigint[] = [];
     const skipped: bigint[] = [];
 
     for (const rec of notes) {
@@ -742,19 +749,31 @@ export class TransactionBuilder {
       this.wallet.addNote(note); // adds as Pending; no-op if already tracked
 
       if (rec.leafIndex >= 0) {
-        this.wallet.markNoteCommitted(
-          rec.commitment,
-          rec.leafIndex,
-          rec.txHash,
-          rec.blockNumber
-        );
-        committed.push(rec.commitment);
+        // The scanner returns every note it can decrypt — including ones already
+        // SPENT on-chain (their encryptedNote is still in the event log). On a
+        // fresh wallet with no local state, those would otherwise all show up in
+        // getUnspentNotes(). Check each note's nullifier against the Shield
+        // contract and mark spent ones Spent, not Committed (audit follow-up).
+        note.setLeafIndex(rec.leafIndex);
+        const nullifier = await this.wallet.computeNullifier(note.toData());
+        if (await this.shieldRead!.isSpent(nullifier)) {
+          this.wallet.markNoteSpent(rec.commitment);
+          spent.push(rec.commitment);
+        } else {
+          this.wallet.markNoteCommitted(
+            rec.commitment,
+            rec.leafIndex,
+            rec.txHash,
+            rec.blockNumber
+          );
+          committed.push(rec.commitment);
+        }
       } else {
         pending.push(rec.commitment);
       }
     }
 
-    return { committed, pending, skipped };
+    return { committed, pending, spent, skipped };
   }
 
   /**
