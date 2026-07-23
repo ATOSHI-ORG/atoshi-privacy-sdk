@@ -15,6 +15,7 @@ import {
   TransactionResult,
   ZkProof,
   MerkleProof,
+  NoteData,
   SdkConfig,
   NoteStatus,
 } from '../types';
@@ -218,9 +219,16 @@ export class TransactionBuilder {
     const receipt = await tx.wait();
     
     if (!receipt) {
+      // A null receipt does NOT mean the tx failed — the provider connection may
+      // have dropped (e.g. MetaMask disconnect) while the tx is still pending or
+      // already mined. Surface tx.hash so the caller can poll its status instead
+      // of losing it.
       return {
         success: false,
-        error: 'Transaction failed',
+        txHash: tx.hash,
+        error:
+          'deposit receipt unavailable (provider may have disconnected); the ' +
+          'transaction may still be pending or already mined — check txHash',
       };
     }
 
@@ -246,17 +254,22 @@ export class TransactionBuilder {
       }
     }
 
-    // The deposit is already on-chain, so always track the note (audit Issue 11
-    // scenario 1). Upgrade to Committed once we have the leafIndex from the event.
-    this.wallet.addNote(note);
-    if (leafIndex !== undefined) {
-      note.setLeafIndex(leafIndex);
-      this.wallet.markNoteCommitted(
-        commitment,
-        leafIndex,
-        receipt.hash,
-        receipt.blockNumber
-      );
+    // Only track the note if it belongs to THIS wallet. A deposit to another
+    // recipient (params.recipient) creates a note owned by them; adding it here
+    // would pollute our balance with a note our spending key can't spend.
+    if (publicKey === this.wallet.getPublicKey()) {
+      // The deposit is already on-chain, so always track it (audit Issue 11
+      // scenario 1). Upgrade to Committed once the leafIndex is known.
+      this.wallet.addNote(note);
+      if (leafIndex !== undefined) {
+        note.setLeafIndex(leafIndex);
+        this.wallet.markNoteCommitted(
+          commitment,
+          leafIndex,
+          receipt.hash,
+          receipt.blockNumber
+        );
+      }
     }
 
     return {
@@ -286,14 +299,18 @@ export class TransactionBuilder {
     // Rebuild the Merkle tree from chain events and derive this note's path.
     // Shield + the tree live on L2; there is no privacy-node merkle endpoint, so
     // we reconstruct it the same way the H5 proof path does.
+    // Ensure we have the commitment (a note restored via fromSerialized() may
+    // lack it) — needed for the reorg guard and spent-marking below.
+    const commitment = await this.ensureCommitment(note);
+
     const merkleProof = await this.buildMerkleProof(note.leafIndex);
 
     // Reorg guard: the on-chain leaf at our cached index must still equal this
     // note's commitment. If a reorg shifted the position, the cached leafIndex
     // is stale and would produce an invalid proof / wrong nullifier — revert
     // the note to Pending and fail loud instead (audit Issue 14).
-    if (note.commitment !== undefined && merkleProof.leaf !== note.commitment) {
-      this.wallet.invalidateCommittedNote(note.commitment);
+    if (merkleProof.leaf !== commitment) {
+      this.wallet.invalidateCommittedNote(commitment);
       throw new StaleLeafIndexError();
     }
 
@@ -304,11 +321,7 @@ export class TransactionBuilder {
     // is (e.g. spent from another device), reconcile local state so this note
     // stops being offered as spendable (audit Issue 11 scenario 3).
     if (await this.shieldRead!.isSpent(nullifier)) {
-      // commitment may be undefined on a note restored without it — guard so we
-      // surface NoteAlreadySpentError, not an opaque TypeError (audit Q8).
-      if (note.commitment !== undefined) {
-        this.wallet.markNoteSpent(note.commitment);
-      }
+      this.wallet.markNoteSpent(commitment);
       throw new NoteAlreadySpentError();
     }
 
@@ -347,8 +360,8 @@ export class TransactionBuilder {
     // Once the relayer broadcasts, the nullifier is spent on-chain, so mark the
     // note spent on success even if no txHash came back (audit Issue 11
     // scenario 2).
-    if (result.success && note.commitment !== undefined) {
-      this.wallet.markNoteSpent(note.commitment, result.txHash);
+    if (result.success) {
+      this.wallet.markNoteSpent(commitment, result.txHash);
     }
 
     return result;
@@ -373,13 +386,16 @@ export class TransactionBuilder {
 
     // Rebuild the Merkle tree from chain and derive the input note's path
     // (same reconstruction as the H5 proof path — no privacy-node endpoint).
+    // Ensure we have the input note's commitment (a restored note may lack it).
+    const inCommitment = await this.ensureCommitment(inNote);
+
     const merkleProof = await this.buildMerkleProof(inNote.leafIndex);
 
     // Reorg guard (audit Issue 14): the leaf at our cached index must still be
     // this note's commitment, else the leafIndex is stale (reorg) and would
     // yield an invalid proof — revert to Pending and fail loud.
-    if (inNote.commitment !== undefined && merkleProof.leaf !== inNote.commitment) {
-      this.wallet.invalidateCommittedNote(inNote.commitment);
+    if (merkleProof.leaf !== inCommitment) {
+      this.wallet.invalidateCommittedNote(inCommitment);
       throw new StaleLeafIndexError();
     }
 
@@ -390,11 +406,7 @@ export class TransactionBuilder {
     // Reconcile local state before throwing so a note spent elsewhere stops
     // being offered as spendable (audit Issue 11 scenario 3).
     if (await this.shieldRead!.isSpent(nullifier)) {
-      // Guard commitment (may be undefined on a restored note) so we throw
-      // NoteAlreadySpentError rather than an opaque TypeError (audit Q8).
-      if (inNote.commitment !== undefined) {
-        this.wallet.markNoteSpent(inNote.commitment);
-      }
+      this.wallet.markNoteSpent(inCommitment);
       throw new NoteAlreadySpentError();
     }
 
@@ -436,9 +448,7 @@ export class TransactionBuilder {
     // so mark the input note spent on success even if no txHash came back
     // (audit Issue 11 scenario 2).
     if (result.success) {
-      if (inNote.commitment !== undefined) {
-        this.wallet.markNoteSpent(inNote.commitment, result.txHash);
-      }
+      this.wallet.markNoteSpent(inCommitment, result.txHash);
 
       // If transferring to self, track the new output note. The Transfer event
       // carries no leafIndex (audit Q6), so it stays Pending until a ChainScanner
@@ -549,16 +559,19 @@ export class TransactionBuilder {
       const ownPub = this.wallet.getPublicKey();
       const isSelf = ownPub !== null && note.owner === ownPub;
       if (isSelf) {
-        // Self-note: default to our own viewing key. If we don't even have one
-        // (deprecated generateKeypair path), emit '0x' — we already hold the
-        // note locally, so on-chain recovery isn't needed.
+        // Self-note: default to our own viewing key.
         pubKey = this.wallet.getViewingPubKey() ?? undefined;
         if (!pubKey) {
-          console.warn(
-            '[atoshi-sdk] no viewing key for self-note; emitting empty ' +
-              'encryptedNote (note is already held locally).'
+          // Only reachable via the deprecated generateKeypair()/importKeypair()
+          // paths, which derive no viewing key. Emitting '0x' would silently put
+          // a note on-chain that ChainScanner can never recover (cross-device
+          // recovery breaks). Fail loud instead of losing recoverability
+          // (audit Issue 6 follow-up).
+          throw new InvalidParamsError(
+            'wallet has no viewing key (deprecated generateKeypair path): ' +
+              'initialize via initFromEIP712Signature/Mnemonic/Passphrase so the ' +
+              'note can be recovered by scanning the chain.'
           );
-          return '0x';
         }
       } else {
         // External recipient without a viewing key: emitting an empty or
@@ -646,6 +659,24 @@ export class TransactionBuilder {
       pathIndices: path.pathIndices,
       root: path.root,
     };
+  }
+
+  /**
+   * Return the note's commitment, recomputing it from (amount, tokenId, owner,
+   * blinding) when it wasn't stored — a note restored via fromSerialized() may
+   * carry no commitment (audit Issue 11 follow-up). Callers use the returned
+   * value for the reorg guard and markNoteSpent() so a spent note is always
+   * reconciled, instead of silently skipping when commitment is undefined.
+   */
+  private async ensureCommitment(note: NoteData): Promise<bigint> {
+    if (note.commitment !== undefined) return note.commitment;
+    const n = new Note({
+      amount: note.amount,
+      tokenId: note.tokenId,
+      owner: note.owner,
+      blinding: note.blinding,
+    });
+    return n.computeCommitment(this.poseidon, this._F);
   }
 
   /**
